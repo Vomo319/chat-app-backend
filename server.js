@@ -1,112 +1,116 @@
-import { useEffect, useRef, useState } from 'react'
-import { io, Socket } from 'socket.io-client'
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
 
-interface Message {
-  message: string
-  username: string
-  room: string
-  timestamp: string
-}
+const app = express();
+app.use(cors());
 
-interface User {
-  username: string
-  isTyping?: boolean
-}
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // In production, replace with your frontend URL
+    methods: ["GET", "POST"]
+  }
+});
 
-export function useSocket(url: string, username: string, room: string) {
-  const [isConnected, setIsConnected] = useState(false)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [users, setUsers] = useState<User[]>([])
-  const [typingUsers, setTypingUsers] = useState<string[]>([])
-  const socketRef = useRef<Socket | null>(null)
-  const typingTimeoutRef = useRef<NodeJS.Timeout>()
+const users = new Map();
+const rooms = new Map();
 
-  useEffect(() => {
-    const socket = io(url, {
-      transports: ['websocket'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    })
-    socketRef.current = socket
+app.get('/', (req, res) => {
+  res.send('Chat App Backend is running!');
+});
 
-    socket.on('connect', () => {
-      console.log('Connected to server')
-      setIsConnected(true)
-      socket.emit('join_room', { username, room })
-    })
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id);
 
-    socket.on('disconnect', () => {
-      console.log('Disconnected from server')
-      setIsConnected(false)
-    })
+  socket.on('join', ({ username, room }) => {
+    socket.join(room);
+    users.set(socket.id, { id: socket.id, username, room });
+    
+    // Add user to room
+    if (!rooms.has(room)) {
+      rooms.set(room, new Set());
+    }
+    rooms.get(room).add(socket.id);
 
-    socket.on('receive_message', (message: Message) => {
-      setMessages(prev => [...prev, message])
-    })
+    // Send system message
+    io.to(room).emit('receive_message', {
+      id: Date.now().toString(),
+      type: 'system',
+      message: `${username} has joined the room`,
+      username: 'System',
+      room,
+      timestamp: Date.now()
+    });
 
-    socket.on('user_joined', ({ users: roomUsers }) => {
-      setUsers(roomUsers.map((username: string) => ({ username })))
-    })
+    // Send updated user list
+    const roomUsers = Array.from(rooms.get(room))
+      .map(id => users.get(id))
+      .filter(Boolean);
+    io.to(room).emit('user_list', roomUsers);
+  });
 
-    socket.on('user_left', ({ users: roomUsers }) => {
-      setUsers(roomUsers.map((username: string) => ({ username })))
-    })
+  socket.on('send_message', (data) => {
+    const user = users.get(socket.id);
+    if (user) {
+      io.to(user.room).emit('receive_message', {
+        ...data,
+        timestamp: Date.now()
+      });
+    }
+  });
 
-    socket.on('user_typing', ({ username: typingUser, isTyping }) => {
-      setTypingUsers(prev => 
-        isTyping 
-          ? [...new Set([...prev, typingUser])]
-          : prev.filter(u => u !== typingUser)
-      )
-    })
+  socket.on('typing_start', () => {
+    const user = users.get(socket.id);
+    if (user) {
+      socket.to(user.room).emit('typing_start', { username: user.username });
+    }
+  });
 
-    socket.on('ping', () => {
-      socket.emit('pong')
-    })
+  socket.on('typing_end', () => {
+    const user = users.get(socket.id);
+    if (user) {
+      socket.to(user.room).emit('typing_end', { username: user.username });
+    }
+  });
 
-    return () => {
-      if (socket) {
-        socket.emit('leave_room', { username, room })
-        socket.disconnect()
+  socket.on('disconnect', () => {
+    const user = users.get(socket.id);
+    if (user) {
+      const { username, room } = user;
+      users.delete(socket.id);
+      
+      if (rooms.has(room)) {
+        rooms.get(room).delete(socket.id);
+        if (rooms.get(room).size === 0) {
+          rooms.delete(room);
+        } else {
+          // Send system message
+          io.to(room).emit('receive_message', {
+            id: Date.now().toString(),
+            type: 'system',
+            message: `${username} has left the room`,
+            username: 'System',
+            room,
+            timestamp: Date.now()
+          });
+
+          // Send updated user list
+          const roomUsers = Array.from(rooms.get(room))
+            .map(id => users.get(id))
+            .filter(Boolean);
+          io.to(room).emit('user_list', roomUsers);
+        }
       }
     }
-  }, [url, username, room])
+    console.log('A user disconnected:', socket.id);
+  });
+});
 
-  const sendMessage = (messageText: string) => {
-    if (socketRef.current) {
-      socketRef.current.emit('send_message', {
-        message: messageText,
-        username,
-        room
-      })
-    }
-  }
+const PORT = process.env.PORT || 3000;
 
-  const sendTypingStatus = (isTyping: boolean) => {
-    if (socketRef.current) {
-      socketRef.current.emit('typing', { username, room, isTyping })
-    }
-  }
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
-  const handleTyping = () => {
-    sendTypingStatus(true)
-    
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-    }
-    
-    typingTimeoutRef.current = setTimeout(() => {
-      sendTypingStatus(false)
-    }, 1000)
-  }
-
-  return { 
-    isConnected, 
-    messages, 
-    users, 
-    typingUsers, 
-    sendMessage,
-    handleTyping
-  }
-}
