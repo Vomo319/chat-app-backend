@@ -19,6 +19,8 @@ const users = new Map();
 const rooms = new Map();
 const messages = new Map();
 
+const CORRECT_PASSWORD = '1010';
+
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
@@ -30,29 +32,31 @@ app.get('/', (req, res) => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('create_room', ({ roomName, password }) => {
-    const hashedPassword = hashPassword(password);
-    rooms.set(roomName, { password: hashedPassword, users: new Set() });
-    messages.set(roomName, []);
-    socket.emit('room_created', { roomName });
-  });
-
   socket.on('join_room', ({ username, room, password }) => {
-    const roomData = rooms.get(room);
-    if (!roomData || roomData.password !== hashPassword(password)) {
-      socket.emit('join_error', 'Invalid room or password');
+    if (password !== CORRECT_PASSWORD) {
+      socket.emit('join_error', 'Invalid password');
       return;
     }
 
     socket.join(room);
     users.set(socket.id, { id: socket.id, username, room, isOnline: true });
-    roomData.users.add(socket.id);
+
+    if (!rooms.has(room)) {
+      rooms.set(room, new Set());
+    }
+    rooms.get(room).add(socket.id);
+
+    if (!messages.has(room)) {
+      messages.set(room, []);
+    }
 
     // Send existing messages to the user
     const roomMessages = messages.get(room) || [];
     socket.emit('message_history', roomMessages);
 
-    io.to(room).emit('user_list', Array.from(roomData.users).map(id => users.get(id)));
+    io.to(room).emit('user_list', Array.from(rooms.get(room)).map(id => users.get(id)));
+    
+    socket.emit('join_success', { username });
   });
 
   socket.on('send_message', (data) => {
@@ -91,8 +95,8 @@ io.on('connection', (socket) => {
       users.delete(socket.id);
       const roomData = rooms.get(room);
       if (roomData) {
-        roomData.users.delete(socket.id);
-        io.to(room).emit('user_list', Array.from(roomData.users).map(id => users.get(id)));
+        roomData.delete(socket.id);
+        io.to(room).emit('user_list', Array.from(roomData).map(id => users.get(id)));
       }
     }
     console.log('A user disconnected:', socket.id);
@@ -104,4 +108,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
