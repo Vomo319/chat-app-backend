@@ -25,6 +25,25 @@ app.get('/', (req, res) => {
   res.send('Chat App Backend is running!');
 });
 
+function deleteExpiredMessages(room) {
+  const roomMessages = messages.get(room) || [];
+  const now = Date.now();
+  const updatedMessages = roomMessages.filter(msg => {
+    if (msg.duration && now - msg.timestamp > msg.duration * 1000) {
+      io.to(room).emit('message_deleted', { messageId: msg.id });
+      return false;
+    }
+    return true;
+  });
+  messages.set(room, updatedMessages);
+}
+
+setInterval(() => {
+  for (const room of rooms.keys()) {
+    deleteExpiredMessages(room);
+  }
+}, 1000); // Check every second
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
@@ -64,7 +83,7 @@ io.on('connection', (socket) => {
     const { room, id, message, username, timestamp, duration } = data;
     console.log('Received message:', data);
 
-    const newMessage = { id, message, username, timestamp, duration, seenBy:[username], reactions: {} };
+    const newMessage = { id, message, username, timestamp, duration, seenBy: [username], reactions: {} };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
     messages.set(room, roomMessages);
