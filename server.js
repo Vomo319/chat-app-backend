@@ -4,11 +4,26 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+require('dotenv').config();
 
-mongoose.connect('mongodb://localhost:27017/chatapp', { useNewUrlParser: true, useUnifiedTopology: true });
-const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+const app = express();
+app.use(cors());
 
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+// MongoDB connection
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/chatapp';
+mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+// Basic schema definitions (you may need to expand these)
 const UserSchema = new mongoose.Schema({
   username: { type: String, unique: true, required: true },
   password: { type: String, required: true },
@@ -58,16 +73,6 @@ function decryptMessage(privateKey, encryptedMessage) {
   return crypto.privateDecrypt(privateKey, Buffer.from(encryptedMessage, 'base64')).toString();
 }
 
-const app = express();
-app.use(cors());
-
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
 
 const users = new Map();
 const rooms = new Map();
@@ -78,6 +83,11 @@ const FIXED_GROUP = 'main-group';
 
 app.get('/', (req, res) => {
   res.send('Chat App Backend is running!');
+});
+
+// Ping route to keep the server active
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
 });
 
 function deleteExpiredMessages(room) {
@@ -112,6 +122,12 @@ io.on('connection', (socket) => {
       return;
     }
 
+    let user = await User.findOne({ username });
+    if (!user) {
+      user = new User({ username });
+      await user.save();
+    }
+
     socket.join(room);
     users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
 
@@ -138,11 +154,11 @@ io.on('connection', (socket) => {
     socket.emit('public_key', userKeyPair.publicKey);
 
     // Send follower count and verification badge status
-    const user = await User.findOne({ username });
-    if (user) {
+    const userDb = await User.findOne({ username });
+    if (userDb) {
       socket.emit('user_info', {
-        followersCount: user.followers.length,
-        verificationBadge: user.verificationBadge
+        followersCount: userDb.followers.length,
+        verificationBadge: userDb.verificationBadge
       });
     }
   });
@@ -203,25 +219,23 @@ io.on('connection', (socket) => {
     const { room, id, message, username, timestamp, duration, recipientId } = data;
     console.log('Received message:', data);
 
-    const newMessage = { id, message, username, timestamp, duration, seenBy: [username], reactions: {} };
-    const roomMessages = messages.get(room) || [];
-    roomMessages.push(newMessage);
-    messages.set(room, roomMessages);
-
-    const user = users.get(socket.id);
+    const user = await User.findOne({ username });
     if (user) {
-      const sender = await User.findOne({ username: user.username });
-      if (sender) {
-        const streakCount = await updateStreak(sender._id, recipientId);
-        io.to(user.room).emit('receive_message', {
-          ...data,
-          timestamp: Date.now(),
-          streakCount
-        });
-      }
-    }
+      const newMessage = new Message({
+        content: message,
+        user: user._id,
+      });
+      await newMessage.save();
 
-    console.log('Broadcasting message to room:', room);
+      const streakCount = await updateStreak(user._id, recipientId);
+      io.to(room).emit('receive_message', {
+        id: newMessage._id,
+        message: newMessage.content,
+        username,
+        timestamp: newMessage.timestamp,
+        streakCount
+      });
+    }
   });
 
   socket.on('edit_message', ({ messageId, newText, room }) => {
@@ -296,8 +310,7 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (user) {
       const { room } = user;
-      user.isOnline = false;
-      user.isActive = false;
+      users.delete(socket.id);
       const roomData = rooms.get(room);
       if (roomData) {
         roomData.delete(socket.id);
@@ -351,9 +364,30 @@ async function updateStreak(user1Id, user2Id) {
   return streak.count;
 }
 
+const MessageSchema = new mongoose.Schema({
+  content: String,
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  timestamp: { type: Date, default: Date.now },
+});
+
+const Message = mongoose.model('Message', MessageSchema);
+
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Keep-alive mechanism
+setInterval(() => {
+  http.get(`http://localhost:${PORT}/ping`, (resp) => {
+    if (resp.statusCode === 200) {
+      console.log('Ping successful');
+    } else {
+      console.log('Ping failed');
+    }
+  }).on('error', (err) => {
+    console.log('Ping error: ' + err.message);
+  });
+}, 5 * 60 * 1000); // Ping every 5 minutes
 
