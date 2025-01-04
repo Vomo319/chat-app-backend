@@ -167,7 +167,17 @@ io.on('connection', (socket) => {
     const { room, id, message, username, timestamp, duration, replyTo } = data;
     console.log('Received message:', data);
 
-    const newMessage = { id, message, username, timestamp, duration, replyTo, seenBy: [username], reactions: {} };
+    const newMessage = { 
+      id, 
+      message, 
+      username, 
+      timestamp, 
+      duration, 
+      replyTo, 
+      seenBy: [username], 
+      reactions: {},
+      expirationTime: null
+    };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
     messages.set(room, roomMessages);
@@ -239,8 +249,11 @@ io.on('connection', (socket) => {
     const message = roomMessages.find(msg => msg.id === messageId);
     if (message && !message.seenBy.includes(username)) {
       message.seenBy.push(username);
+      if (message.seenBy.length === 2 && message.duration) {
+        message.expirationTime = Date.now() + message.duration * 1000;
+      }
       console.log('Updating seen status for message:', messageId);
-      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy });
+      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy, expirationTime: message.expirationTime });
     }
   });
 
