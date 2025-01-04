@@ -164,10 +164,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration } = data;
+    const { room, id, message, username, timestamp, duration, replyTo } = data;
     console.log('Received message:', data);
 
-    const newMessage = { id, message, username, timestamp, duration, seenBy: [username], reactions: {} };
+    const newMessage = { id, message, username, timestamp, duration, replyTo, seenBy: [username], reactions: {} };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
     messages.set(room, roomMessages);
@@ -176,7 +176,7 @@ io.on('connection', (socket) => {
     io.to(room).emit('receive_message', newMessage);
   });
 
-  socket.on('send_private_message', ({ senderId, receiverId, message }) => {
+  socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
     const sender = Array.from(users.values()).find(user => user.id === senderId);
     const receiver = Array.from(users.values()).find(user => user.id === receiverId);
 
@@ -187,7 +187,9 @@ io.on('connection', (socket) => {
         receiverId,
         senderUsername: sender.username,
         message,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        duration,
+        replyTo
       };
 
       if (!privateMessages.has(senderId)) {
