@@ -2,9 +2,11 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const bcrypt = require('bcrypt');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -18,13 +20,34 @@ const users = new Map();
 const rooms = new Map();
 const messages = new Map();
 
-app.get('/', (req, res) => {
-  res.send('Chat App Backend is running!');
+// In-memory user storage (replace with a database in production)
+const userCredentials = new Map();
+
+app.post('/register', async (req, res) => {
+  const { username, password } = req.body;
+  if (userCredentials.has(username)) {
+    return res.status(400).json({ error: 'Username already exists' });
+  }
+  const hashedPassword = await bcrypt.hash(password, 10);
+  userCredentials.set(username, hashedPassword);
+  res.status(201).json({ message: 'User registered successfully' });
 });
 
-// Ping route to keep the server active
-app.get('/ping', (req, res) => {
-  res.status(200).send('pong');
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const hashedPassword = userCredentials.get(username);
+  if (!hashedPassword) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  const isPasswordValid = await bcrypt.compare(password, hashedPassword);
+  if (!isPasswordValid) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  res.json({ message: 'Login successful' });
+});
+
+app.get('/', (req, res) => {
+  res.send('Chat App Backend is running!');
 });
 
 io.on('connection', (socket) => {
@@ -51,7 +74,7 @@ io.on('connection', (socket) => {
       io.to(room).emit('user_list', roomUsers);
       
       console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username });
+      io.to(room).emit('user_joined', { username });
     } catch (error) {
       console.error('Error in join event:', error);
       socket.emit('join_error', 'Failed to join the room');
@@ -85,7 +108,7 @@ io.on('connection', (socket) => {
     try {
       const user = users.get(socket.id);
       if (user) {
-        const { room } = user;
+        const { username, room } = user;
         users.delete(socket.id);
         const roomData = rooms.get(room);
         if (roomData) {
@@ -93,6 +116,7 @@ io.on('connection', (socket) => {
           const roomUsers = Array.from(roomData).map(id => users.get(id)).filter(Boolean);
           console.log('User disconnected, updating user list for room:', room);
           io.to(room).emit('user_list', roomUsers);
+          io.to(room).emit('user_left', { username });
         }
       }
       console.log('A user disconnected:', socket.id);
@@ -102,22 +126,9 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-// Keep-alive mechanism
-setInterval(() => {
-  http.get(`http://localhost:${PORT}/ping`, (resp) => {
-    if (resp.statusCode === 200) {
-      console.log('Ping successful');
-    } else {
-      console.log('Ping failed');
-    }
-  }).on('error', (err) => {
-    console.log('Ping error: ' + err.message);
-  });
-}, 5 * 60 * 1000); // Ping every 5 minutes
 
