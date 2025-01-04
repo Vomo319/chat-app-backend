@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -32,6 +32,11 @@ const privateMessages = new Map();
 const userProfiles = new Map();
 
 const FIXED_GROUP = 'main-group';
+
+// Simple hash function using SHA-256
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
 
 // Set up multer for file uploads
 const storage = multer.diskStorage({
@@ -78,12 +83,12 @@ setInterval(() => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('register', async ({ username, password }) => {
+  socket.on('register', ({ username, password }) => {
     if (userProfiles.has(username)) {
       socket.emit('register_error', 'Username already exists');
     } else {
       try {
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = hashPassword(password);
         userProfiles.set(username, {
           password: hashedPassword,
           followers: [],
@@ -100,7 +105,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('join_room', async ({ username, room, password }) => {
+  socket.on('join_room', ({ username, room, password }) => {
     console.log('Join room attempt:', { username, room });
 
     const userProfile = userProfiles.get(username);
@@ -110,8 +115,8 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const passwordMatch = await bcrypt.compare(password, userProfile.password);
-      if (!passwordMatch) {
+      const hashedPassword = hashPassword(password);
+      if (hashedPassword !== userProfile.password) {
         console.log('Invalid password attempt');
         socket.emit('join_error', 'Invalid password');
         return;
