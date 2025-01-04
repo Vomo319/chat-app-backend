@@ -1,326 +1,481 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const crypto = require('crypto');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { io, Socket } from 'socket.io-client'
 
-const app = express();
-app.use(cors());
-app.use('/uploads', express.static('uploads'));
-
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
+interface Message {
+  id: string
+  message: string
+  username: string
+  timestamp: number
+  isEdited?: boolean
+  replyTo?: string
+  seenBy: string[]
+  duration: number | null
+  reactions: { [key: string]: string[] }
 }
 
-const users = new Map();
-const rooms = new Map();
-const messages = new Map();
-const privateMessages = new Map();
-const userProfiles = new Map();
-
-const FIXED_GROUP = 'main-group';
-
-// Simple hash function using SHA-256
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
+interface User {
+  id: string
+  username: string
+  isOnline: boolean
+  isActive: boolean
 }
 
-// Set up multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage: storage });
+interface PrivateMessage {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  message: string;
+  timestamp: number;
+  duration: number | null;
+  replyTo?: string;
+}
 
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (req.file) {
-    res.json({ filename: req.file.filename });
-  } else {
-    res.status(400).send('No file uploaded.');
-  }
-});
+interface UserProfile {
+  username: string;
+  followers: number;
+  following: number;
+  stars: number;
+}
 
-app.get('/', (req, res) => {
-  res.send('Chat App Backend is running!');
-});
+const FIXED_GROUP = 'main-group'
+const RECONNECTION_ATTEMPTS = 5
+const RECONNECTION_DELAY = 1000
 
-function deleteExpiredMessages(room) {
-  const roomMessages = messages.get(room) || [];
-  const now = Date.now();
-  const updatedMessages = roomMessages.filter(msg => {
-    if (msg.duration && now - msg.timestamp > msg.duration * 1000) {
-      io.to(room).emit('message_deleted', { messageId: msg.id });
-      return false;
+export function useSocket(url: string) {
+  const [isConnected, setIsConnected] = useState(false)
+  const [messages, setMessages] = useState<Message[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const socketRef = useRef<Socket | null>(null)
+  const reconnectAttempts = useRef(0)
+  const [currentUsername, setCurrentUsername] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('username')
     }
-    return true;
-  });
-  messages.set(room, updatedMessages);
-}
+    return null
+  })
+  const [joinError, setJoinError] = useState<string | null>(null)
+  const [typingUsers, setTypingUsers] = useState<string[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const isInitialized = useRef(false)
+  const [privateMessages, setPrivateMessages] = useState<{ [key: string]: PrivateMessage[] }>({});
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
-setInterval(() => {
-  for (const room of rooms.keys()) {
-    deleteExpiredMessages(room);
-  }
-}, 1000);
+  // Initialize socket connection
+  const initializeSocket = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    
+    try {
+      if (socketRef.current?.connected) {
+        return socketRef.current
+      }
 
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+      const socket = io(url, {
+        transports: ['websocket'],
+        reconnection: true,
+        reconnectionAttempts: RECONNECTION_ATTEMPTS,
+        reconnectionDelay: RECONNECTION_DELAY,
+        timeout: 10000,
+      })
 
-  socket.on('register', ({ username, password }) => {
-    if (userProfiles.has(username)) {
-      socket.emit('register_error', 'Username already exists');
-    } else {
-      try {
-        const hashedPassword = hashPassword(password);
-        userProfiles.set(username, {
-          password: hashedPassword,
-          followers: [],
-          following: [],
-          verified: false,
-          streakCount: 0,
-          stars: 0
-        });
-        socket.emit('register_success');
-      } catch (error) {
-        console.error('Error hashing password:', error);
-        socket.emit('register_error', 'Registration failed');
+      socketRef.current = socket
+      return socket
+    } catch (error) {
+      console.error('Socket initialization error:', error)
+      return null
+    }
+  }, [url])
+
+  // Setup socket event listeners
+  useEffect(() => {
+    if (isInitialized.current || typeof window === 'undefined') return
+
+    const socket = initializeSocket()
+    if (!socket) return
+
+    isInitialized.current = true
+
+    const handleConnect = () => {
+      console.log('Socket connected successfully')
+      setIsConnected(true)
+      reconnectAttempts.current = 0
+
+      // Attempt to reconnect with stored credentials
+      const storedUsername = localStorage.getItem('username')
+      const storedPassword = localStorage.getItem('password')
+      if (storedUsername && storedPassword) {
+        console.log('Attempting to reconnect with stored credentials')
+        socket.emit('join_room', {
+          username: storedUsername,
+          room: FIXED_GROUP,
+          password: storedPassword
+        })
       }
     }
-  });
 
-  socket.on('join_room', ({ username, room, password }) => {
-    console.log('Join room attempt:', { username, room });
-
-    const userProfile = userProfiles.get(username);
-    if (!userProfile) {
-      socket.emit('join_error', 'User not found');
-      return;
+    const handleDisconnect = (reason: string) => {
+      console.log('Socket disconnected:', reason)
+      setIsConnected(false)
     }
 
-    try {
-      const hashedPassword = hashPassword(password);
-      if (hashedPassword !== userProfile.password) {
-        console.log('Invalid password attempt');
-        socket.emit('join_error', 'Invalid password');
+    const handleConnectError = (error: Error) => {
+      console.error('Connection error:', error)
+      setIsConnected(false)
+      reconnectAttempts.current++
+
+      if (reconnectAttempts.current >= RECONNECTION_ATTEMPTS) {
+        console.log('Max reconnection attempts reached')
+        socket.close()
+      }
+    }
+
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('connect_error', handleConnectError)
+
+    // Set up ping interval
+    const pingInterval = setInterval(() => {
+      if (socket.connected) {
+        const start = Date.now()
+        socket.emit('ping', () => {
+          const latency = Date.now() - start
+          console.log(`Ping: ${latency}ms`)
+        })
+      }
+    }, 30000) // Ping every 30 seconds
+
+    // Handle pong from server
+    socket.on('pong', () => {
+      console.log('Received pong from server')
+    })
+
+    socket.on('receive_message', (data: Message) => {
+      setMessages(prev => [...prev, data]);
+      setUnreadCount(prev => prev + 1);
+    })
+
+    socket.on('message_history', (history: Message[]) => {
+      setMessages(history);
+    })
+
+    socket.on('user_list', (userList: User[]) => {
+      setUsers(userList)
+    })
+
+    socket.on('join_success', ({ username }) => {
+      setCurrentUsername(username)
+      setJoinError(null)
+    })
+
+    socket.on('join_error', (error: string) => {
+      setJoinError(error)
+      localStorage.removeItem('username')
+      localStorage.removeItem('password')
+    })
+
+    socket.on('message_edited', ({ messageId, newText }) => {
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, message: newText, isEdited: true } : msg
+      ))
+    })
+
+    socket.on('message_deleted', ({ messageId }) => {
+      setMessages(prev => prev.filter(msg => msg.id !== messageId))
+    })
+
+    socket.on('typing_start', ({ username }) => {
+      setTypingUsers(prev => Array.from(new Set([...prev, username])))
+    })
+
+    socket.on('typing_end', ({ username }) => {
+      setTypingUsers(prev => prev.filter(user => user !== username))
+    })
+
+    socket.on('message_reaction', ({ messageId, emoji, username }) => {
+      setMessages(prev => prev.map(msg => {
+        if (msg.id === messageId) {
+          const reactions = { ...msg.reactions }
+          if (!reactions[emoji]) {
+            reactions[emoji] = []
+          }
+          if (!reactions[emoji].includes(username)) {
+            reactions[emoji].push(username)
+          }
+          return { ...msg, reactions }
+        }
+        return msg
+      }))
+    })
+
+    socket.on('update_seen', ({ messageId, seenBy }) => {
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, seenBy } : msg
+      ))
+    })
+
+    socket.on('receive_private_message', (message: PrivateMessage) => {
+      setPrivateMessages(prev => ({
+        ...prev,
+        [message.senderId]: [...(prev[message.senderId] || []), message]
+      }));
+    });
+
+    socket.on('private_message_sent', (message: PrivateMessage) => {
+      setPrivateMessages(prev => ({
+        ...prev,
+        [message.receiverId]: [...(prev[message.receiverId] || []), message]
+      }));
+    });
+
+    socket.on('follow_success', ({ followedUsername }) => {
+      setUserProfile(prev => prev ? {
+        ...prev,
+        following: prev.following + 1
+      } : null);
+    });
+
+    socket.on('new_follower', ({ followerUsername }) => {
+      setUserProfile(prev => prev ? {
+        ...prev,
+        followers: prev.followers + 1
+      } : null);
+    });
+
+    socket.on('star_earned', () => {
+      setUserProfile(prev => prev ? {
+        ...prev,
+        stars: prev.stars + 1
+      } : null);
+    });
+
+    return () => {
+      isInitialized.current = false
+      if (socket) {
+        socket.off('connect', handleConnect)
+        socket.off('disconnect', handleDisconnect)
+        socket.off('connect_error', handleConnectError)
+        socket.off('pong')
+        socket.off('receive_message')
+        socket.off('message_history')
+        socket.off('user_list')
+        socket.off('join_success')
+        socket.off('join_error')
+        socket.off('message_edited')
+        socket.off('message_deleted')
+        socket.off('typing_start')
+        socket.off('typing_end')
+        socket.off('message_reaction')
+        socket.off('update_seen')
+        socket.off('receive_private_message');
+        socket.off('private_message_sent');
+        socket.off('follow_success');
+        socket.off('new_follower');
+        socket.off('star_earned');
+        socket.disconnect()
+      }
+      clearInterval(pingInterval)
+    }
+  }, [url, initializeSocket, setMessages])
+
+  const registerUser = useCallback((username: string, password: string) => {
+    return new Promise<void>((resolve, reject) => {
+      const socket = socketRef.current || initializeSocket();
+      
+      if (!socket) {
+        reject(new Error('Unable to initialize socket connection'));
         return;
       }
 
-      socket.join(room);
-      users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
+      socket.emit('register', { username, password });
 
-      if (!rooms.has(room)) {
-        rooms.set(room, new Set());
-      }
-      rooms.get(room).add(socket.id);
+      socket.on('register_success', () => {
+        resolve();
+      });
 
-      if (!messages.has(room)) {
-        messages.set(room, []);
-      }
+      socket.on('register_error', (error: string) => {
+        reject(new Error(error));
+      });
+    });
+  }, [initializeSocket]);
 
-      // Send existing messages to the user
-      const roomMessages = messages.get(room) || [];
-      socket.emit('message_history', roomMessages);
-
-      const roomUsers = Array.from(rooms.get(room)).map(id => {
-        const user = users.get(id);
-        return {
-          ...user,
-          followers: userProfiles.get(user.username).followers.length,
-          verified: userProfiles.get(user.username).verified
-        };
-      }).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
+  const joinRoom = useCallback((username: string, password: string) => {
+    return new Promise<void>((resolve, reject) => {
+      const socket = socketRef.current || initializeSocket()
       
-      console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username });
-
-      // Increment streak count
-      userProfile.streakCount++;
-      if (userProfile.streakCount % 7 === 0) {
-        userProfile.stars++;
-        socket.emit('star_earned');
+      if (!socket) {
+        reject(new Error('Unable to initialize socket connection'))
+        return
       }
+
+      const joinSuccessHandler = ({ username: joinedUsername }: { username: string }) => {
+        setCurrentUsername(joinedUsername)
+        setJoinError(null)
+        localStorage.setItem('username', username)
+        localStorage.setItem('password', password)
+        socket.off('join_success', joinSuccessHandler)
+        socket.off('join_error', joinErrorHandler)
+        resolve()
+      }
+
+      const joinErrorHandler = (error: string) => {
+        setJoinError(error)
+        localStorage.removeItem('username')
+        localStorage.removeItem('password')
+        socket.off('join_success', joinSuccessHandler)
+        socket.off('join_error', joinErrorHandler)
+        reject(new Error(error))
+      }
+
+      socket.on('join_success', joinSuccessHandler)
+      socket.on('join_error', joinErrorHandler)
+
+      socket.emit('join_room', { username, room: FIXED_GROUP, password })
+    })
+  }, [initializeSocket])
+
+  const sendPrivateMessage = useCallback((receiverId: string, message: string, duration: number | null = null, replyTo?: string) => {
+    const socket = socketRef.current;
+    if (!socket?.connected || !currentUsername) return;
+
+    socket.emit('send_private_message', {
+      senderId: socket.id,
+      receiverId,
+      message,
+      duration,
+      replyTo
+    });
+  }, [currentUsername]);
+
+  const followUser = useCallback((followedUsername: string) => {
+    const socket = socketRef.current;
+    if (!socket?.connected || !currentUsername) return;
+
+    socket.emit('follow_user', {
+      followerUsername: currentUsername,
+      followedUsername
+    });
+  }, [currentUsername]);
+
+  const uploadMedia = useCallback(async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`${url}/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('File upload failed');
+      }
+
+      const { filename } = await response.json();
+      return `${url}/uploads/${filename}`;
     } catch (error) {
-      console.error('Error during join room:', error);
-      socket.emit('join_error', 'An error occurred while joining the room');
+      console.error('Error uploading file:', error);
+      throw error;
     }
-  });
+  }, [url]);
 
-  socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration, replyTo } = data;
-    console.log('Received message:', data);
-
-    const newMessage = { id, message, username, timestamp, duration, replyTo, seenBy: [username], reactions: {} };
-    const roomMessages = messages.get(room) || [];
-    roomMessages.push(newMessage);
-    messages.set(room, roomMessages);
-
-    console.log('Broadcasting message to room:', room);
-    io.to(room).emit('receive_message', newMessage);
-  });
-
-  socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
-    const sender = Array.from(users.values()).find(user => user.id === senderId);
-    const receiver = Array.from(users.values()).find(user => user.id === receiverId);
-
-    if (sender && receiver) {
-      const privateMessage = {
-        id: Date.now().toString(),
-        senderId,
-        receiverId,
-        senderUsername: sender.username,
-        message,
-        timestamp: Date.now(),
-        duration,
-        replyTo
-      };
-
-      if (!privateMessages.has(senderId)) {
-        privateMessages.set(senderId, []);
-      }
-      if (!privateMessages.has(receiverId)) {
-        privateMessages.set(receiverId, []);
-      }
-
-      privateMessages.get(senderId).push(privateMessage);
-      privateMessages.get(receiverId).push(privateMessage);
-
-      io.to(receiverId).emit('receive_private_message', privateMessage);
-      socket.emit('private_message_sent', privateMessage);
+  const sendMessage = useCallback((messageText: string, replyTo?: string, duration: number | null = null) => {
+    const socket = socketRef.current
+    if (!socket?.connected || !currentUsername) {
+      console.log('Socket not connected or user not joined')
+      return
     }
-  });
 
-  socket.on('follow_user', ({ followerUsername, followedUsername }) => {
-    const followerProfile = userProfiles.get(followerUsername);
-    const followedProfile = userProfiles.get(followedUsername);
-
-    if (followerProfile && followedProfile) {
-      if (!followedProfile.followers.includes(followerUsername)) {
-        followedProfile.followers.push(followerUsername);
-        followerProfile.following.push(followedUsername);
-        socket.emit('follow_success', { followedUsername });
-        io.to(followedUsername).emit('new_follower', { followerUsername });
-      }
+    const messageData = {
+      id: Date.now().toString(),
+      message: messageText,
+      username: currentUsername,
+      timestamp: Date.now(),
+      replyTo,
+      seenBy: [currentUsername],
+      duration,
+      reactions: {}
     }
-  });
 
-  socket.on('edit_message', ({ messageId, newText, room }) => {
-    console.log('Edit message request:', { messageId, newText, room });
-    const roomMessages = messages.get(room) || [];
-    const messageIndex = roomMessages.findIndex(msg => msg.id === messageId);
-    if (messageIndex !== -1) {
-      roomMessages[messageIndex].message = newText;
-      roomMessages[messageIndex].isEdited = true;
-      console.log('Message edited, broadcasting to room:', room);
-      io.to(room).emit('message_edited', { messageId, newText });
+    socket.emit('send_message', { ...messageData, room: FIXED_GROUP })
+  }, [currentUsername])
+
+  const editMessage = useCallback((messageId: string, newText: string) => {
+    const socket = socketRef.current
+    if (!socket?.connected) return
+    socket.emit('edit_message', { messageId, newText, room: FIXED_GROUP })
+  }, [])
+
+  const deleteMessage = useCallback((messageId: string) => {
+    const socket = socketRef.current
+    if (!socket?.connected) return
+    socket.emit('delete_message', { messageId, room: FIXED_GROUP })
+  }, [])
+
+  const addReaction = useCallback((messageId: string, emoji: string) => {
+    const socket = socketRef.current
+    if (!socket?.connected || !currentUsername) return
+    socket.emit('add_reaction', { messageId, emoji, username: currentUsername, room: FIXED_GROUP })
+  }, [currentUsername])
+
+  const markMessageAsSeen = useCallback((messageId: string) => {
+    const socket = socketRef.current
+    if (!socket?.connected || !currentUsername) return
+    socket.emit('message_seen', { messageId, username: currentUsername, room: FIXED_GROUP })
+  }, [currentUsername])
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('username')
+    localStorage.removeItem('password')
+    setCurrentUsername(null)
+    setMessages([])
+    setUsers([])
+    setUnreadCount(0)
+    setPrivateMessages({});
+    setUserProfile(null);
+    
+    if (socketRef.current) {
+      socketRef.current.disconnect()
+      socketRef.current = null
     }
-  });
+    
+    isInitialized.current = false
+  }, [])
 
-  socket.on('message_seen', ({ messageId, username, room }) => {
-    console.log('Message seen:', { messageId, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message && !message.seenBy.includes(username)) {
-      message.seenBy.push(username);
-      console.log('Updating seen status for message:', messageId);
-      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy });
-    }
-  });
+  const startTyping = useCallback(() => {
+    const socket = socketRef.current
+    if (!socket?.connected || !currentUsername) return
+    socket.emit('typing_start', { username: currentUsername, room: FIXED_GROUP })
+  }, [currentUsername])
 
-  socket.on('delete_message', ({ messageId, room }) => {
-    console.log('Delete message request:', { messageId, room });
-    const roomMessages = messages.get(room) || [];
-    const updatedMessages = roomMessages.filter(msg => msg.id !== messageId);
-    messages.set(room, updatedMessages);
-    console.log('Message deleted, broadcasting to room:', room);
-    io.to(room).emit('message_deleted', { messageId });
-  });
+  const stopTyping = useCallback(() => {
+    const socket = socketRef.current
+    if (!socket?.connected || !currentUsername) return
+    socket.emit('typing_end', { username: currentUsername, room: FIXED_GROUP })
+  }, [currentUsername])
 
-  socket.on('update_user_status', ({ isActive, room }) => {
-    console.log('User status update:', socket.id, isActive);
-    const user = users.get(socket.id);
-    if (user) {
-      user.isActive = isActive;
-      const roomUsers = Array.from(rooms.get(room)).map(id => users.get(id)).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
-      io.to(room).emit('user_status_update', { userId: socket.id, isActive });
-    }
-  });
-
-  socket.on('typing_start', ({ username, room }) => {
-    console.log('User started typing:', username);
-    socket.to(room).emit('typing_start', { username });
-  });
-
-  socket.on('typing_end', ({ username, room }) => {
-    console.log('User stopped typing:', username);
-    socket.to(room).emit('typing_end', { username });
-  });
-
-  socket.on('add_reaction', ({ messageId, emoji, username, room }) => {
-    console.log('Add reaction:', { messageId, emoji, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message) {
-      if (!message.reactions[emoji]) {
-        message.reactions[emoji] = [];
-      }
-      if (!message.reactions[emoji].includes(username)) {
-        message.reactions[emoji].push(username);
-        io.to(room).emit('message_reaction', { messageId, emoji, username });
-      }
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const user = users.get(socket.id);
-    if (user) {
-      const { username, room } = user;
-      users.delete(socket.id);
-      
-      if (rooms.has(room)) {
-        rooms.get(room).delete(socket.id);
-        if (rooms.get(room).size === 0) {
-          rooms.delete(room);
-        } else {
-          const roomUsers = Array.from(rooms.get(room))
-            .map(id => {
-              const user = users.get(id);
-              return {
-                ...user,
-                followers: userProfiles.get(user.username).followers.length,
-                verified: userProfiles.get(user.username).verified
-              };
-            })
-            .filter(Boolean);
-          io.to(room).emit('user_list', roomUsers);
-        }
-      }
-    }
-    console.log('A user disconnected:', socket.id);
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  return {
+    isConnected,
+    messages,
+    setMessages,
+    privateMessages,
+    users,
+    currentUsername,
+    joinError,
+    typingUsers,
+    unreadCount,
+    userProfile,
+    joinRoom,
+    sendMessage,
+    sendPrivateMessage,
+    editMessage,
+    deleteMessage,
+    addReaction,
+    markMessageAsSeen,
+    logout,
+    startTyping,
+    stopTyping,
+    followUser,
+    uploadMedia,
+    registerUser,
+  }
+}
 
