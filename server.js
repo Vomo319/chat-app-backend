@@ -32,6 +32,7 @@ const privateMessages = new Map();
 const userProfiles = new Map();
 
 const FIXED_GROUP = 'main-group';
+const ALLOWED_USERNAME = '1010';
 
 // Simple hash function using SHA-256
 function hashPassword(password) {
@@ -84,6 +85,11 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
   socket.on('register', ({ username, password }) => {
+    if (username !== ALLOWED_USERNAME) {
+      socket.emit('register_error', 'Registration is not allowed for this username');
+      return;
+    }
+
     if (userProfiles.has(username)) {
       socket.emit('register_error', 'Username already exists');
     } else {
@@ -107,6 +113,11 @@ io.on('connection', (socket) => {
 
   socket.on('join_room', ({ username, room, password }) => {
     console.log('Join room attempt:', { username, room });
+
+    if (username !== ALLOWED_USERNAME) {
+      socket.emit('join_error', 'Access denied. Invalid username.');
+      return;
+    }
 
     const userProfile = userProfiles.get(username);
     if (!userProfile) {
