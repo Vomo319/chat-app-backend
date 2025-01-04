@@ -24,7 +24,6 @@ const messages = new Map();
 const privateMessages = new Map();
 const userProfiles = new Map();
 
-const CORRECT_PASSWORD = '1010';
 const FIXED_GROUP = 'main-group';
 
 // Set up multer for file uploads
