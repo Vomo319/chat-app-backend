@@ -5,6 +5,7 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
@@ -17,6 +18,12 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
 
 const users = new Map();
 const rooms = new Map();
@@ -75,16 +82,21 @@ io.on('connection', (socket) => {
     if (userProfiles.has(username)) {
       socket.emit('register_error', 'Username already exists');
     } else {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      userProfiles.set(username, {
-        password: hashedPassword,
-        followers: [],
-        following: [],
-        verified: false,
-        streakCount: 0,
-        stars: 0
-      });
-      socket.emit('register_success');
+      try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        userProfiles.set(username, {
+          password: hashedPassword,
+          followers: [],
+          following: [],
+          verified: false,
+          streakCount: 0,
+          stars: 0
+        });
+        socket.emit('register_success');
+      } catch (error) {
+        console.error('Error hashing password:', error);
+        socket.emit('register_error', 'Registration failed');
+      }
     }
   });
 
@@ -97,47 +109,52 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const passwordMatch = await bcrypt.compare(password, userProfile.password);
-    if (!passwordMatch) {
-      console.log('Invalid password attempt');
-      socket.emit('join_error', 'Invalid password');
-      return;
-    }
+    try {
+      const passwordMatch = await bcrypt.compare(password, userProfile.password);
+      if (!passwordMatch) {
+        console.log('Invalid password attempt');
+        socket.emit('join_error', 'Invalid password');
+        return;
+      }
 
-    socket.join(room);
-    users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
+      socket.join(room);
+      users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
 
-    if (!rooms.has(room)) {
-      rooms.set(room, new Set());
-    }
-    rooms.get(room).add(socket.id);
+      if (!rooms.has(room)) {
+        rooms.set(room, new Set());
+      }
+      rooms.get(room).add(socket.id);
 
-    if (!messages.has(room)) {
-      messages.set(room, []);
-    }
+      if (!messages.has(room)) {
+        messages.set(room, []);
+      }
 
-    // Send existing messages to the user
-    const roomMessages = messages.get(room) || [];
-    socket.emit('message_history', roomMessages);
+      // Send existing messages to the user
+      const roomMessages = messages.get(room) || [];
+      socket.emit('message_history', roomMessages);
 
-    const roomUsers = Array.from(rooms.get(room)).map(id => {
-      const user = users.get(id);
-      return {
-        ...user,
-        followers: userProfiles.get(user.username).followers.length,
-        verified: userProfiles.get(user.username).verified
-      };
-    }).filter(Boolean);
-    io.to(room).emit('user_list', roomUsers);
-    
-    console.log('User joined successfully:', { username, room });
-    socket.emit('join_success', { username });
+      const roomUsers = Array.from(rooms.get(room)).map(id => {
+        const user = users.get(id);
+        return {
+          ...user,
+          followers: userProfiles.get(user.username).followers.length,
+          verified: userProfiles.get(user.username).verified
+        };
+      }).filter(Boolean);
+      io.to(room).emit('user_list', roomUsers);
+      
+      console.log('User joined successfully:', { username, room });
+      socket.emit('join_success', { username });
 
-    // Increment streak count
-    userProfile.streakCount++;
-    if (userProfile.streakCount % 7 === 0) {
-      userProfile.stars++;
-      socket.emit('star_earned');
+      // Increment streak count
+      userProfile.streakCount++;
+      if (userProfile.streakCount % 7 === 0) {
+        userProfile.stars++;
+        socket.emit('star_earned');
+      }
+    } catch (error) {
+      console.error('Error during join room:', error);
+      socket.emit('join_error', 'An error occurred while joining the room');
     }
   });
 
