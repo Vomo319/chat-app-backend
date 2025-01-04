@@ -2,6 +2,61 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const crypto = require('crypto');
+const mongoose = require('mongoose');
+
+mongoose.connect('mongodb://localhost:27017/chatapp', { useNewUrlParser: true, useUnifiedTopology: true });
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+
+const UserSchema = new mongoose.Schema({
+  username: { type: String, unique: true, required: true },
+  password: { type: String, required: true },
+  email: { type: String, unique: true, required: true },
+  verificationBadge: { type: Boolean, default: false },
+  stars: { type: Number, default: 0 },
+  followers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  purchasedBadges: [{ type: String }],
+  publicKey: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const PrivateMessageSchema = new mongoose.Schema({
+  sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  message: { type: String, required: true },
+  encryptedMessage: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+  reactions: { type: Map, of: [String] },
+  mediaUrl: { type: String }
+});
+
+const StreakSchema = new mongoose.Schema({
+  users: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  count: { type: Number, default: 1 },
+  lastInteraction: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', UserSchema);
+const PrivateMessage = mongoose.model('PrivateMessage', PrivateMessageSchema);
+const Streak = mongoose.model('Streak', StreakSchema);
+
+function generateKeyPair() {
+  return crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+  });
+}
+
+function encryptMessage(publicKey, message) {
+  return crypto.publicEncrypt(publicKey, Buffer.from(message)).toString('base64');
+}
+
+function decryptMessage(privateKey, encryptedMessage) {
+  return crypto.privateDecrypt(privateKey, Buffer.from(encryptedMessage, 'base64')).toString();
+}
 
 const app = express();
 app.use(cors());
@@ -46,8 +101,9 @@ setInterval(() => {
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+  let userKeyPair;
 
-  socket.on('join_room', ({ username, room, password }) => {
+  socket.on('join', async ({ username, room }) => {
     console.log('Join room attempt:', { username, room });
 
     if (password !== CORRECT_PASSWORD) {
@@ -74,13 +130,77 @@ io.on('connection', (socket) => {
 
     const roomUsers = Array.from(rooms.get(room)).map(id => users.get(id)).filter(Boolean);
     io.to(room).emit('user_list', roomUsers);
-    
+
     console.log('User joined successfully:', { username, room });
     socket.emit('join_success', { username });
+
+    userKeyPair = generateKeyPair();
+    socket.emit('public_key', userKeyPair.publicKey);
+
+    // Send follower count and verification badge status
+    const user = await User.findOne({ username });
+    if (user) {
+      socket.emit('user_info', {
+        followersCount: user.followers.length,
+        verificationBadge: user.verificationBadge
+      });
+    }
   });
 
-  socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration } = data;
+  socket.on('send_private_message', async (data) => {
+    const { recipientUsername, message } = data;
+    const sender = await User.findOne({ username: users.get(socket.id).username });
+    const recipient = await User.findOne({ username: recipientUsername });
+
+    if (sender && recipient) {
+      const encryptedMessage = encryptMessage(recipient.publicKey, message);
+      const newPrivateMessage = new PrivateMessage({
+        sender: sender._id,
+        recipient: recipient._id,
+        message,
+        encryptedMessage
+      });
+      await newPrivateMessage.save();
+
+      const recipientSocket = Array.from(io.sockets.sockets.values()).find(
+        (s) => users.get(s.id).username === recipientUsername
+      );
+
+      if (recipientSocket) {
+        recipientSocket.emit('receive_private_message', {
+          senderId: sender._id,
+          senderUsername: sender.username,
+          encryptedMessage
+        });
+      }
+    }
+  });
+
+  socket.on('follow_user', async ({ usernameToFollow }) => {
+    const follower = await User.findOne({ username: users.get(socket.id).username });
+    const userToFollow = await User.findOne({ username: usernameToFollow });
+
+    if (follower && userToFollow) {
+      follower.following.push(userToFollow._id);
+      userToFollow.followers.push(follower._id);
+      await follower.save();
+      await userToFollow.save();
+
+      socket.emit('follow_success', { followingCount: follower.following.length });
+      const userToFollowSocket = Array.from(io.sockets.sockets.values()).find(
+        (s) => users.get(s.id).username === usernameToFollow
+      );
+      if (userToFollowSocket) {
+        userToFollowSocket.emit('new_follower', {
+          followerUsername: follower.username,
+          followersCount: userToFollow.followers.length
+        });
+      }
+    }
+  });
+
+  socket.on('send_message', async (data) => {
+    const { room, id, message, username, timestamp, duration, recipientId } = data;
     console.log('Received message:', data);
 
     const newMessage = { id, message, username, timestamp, duration, seenBy: [username], reactions: {} };
@@ -88,8 +208,20 @@ io.on('connection', (socket) => {
     roomMessages.push(newMessage);
     messages.set(room, roomMessages);
 
+    const user = users.get(socket.id);
+    if (user) {
+      const sender = await User.findOne({ username: user.username });
+      if (sender) {
+        const streakCount = await updateStreak(sender._id, recipientId);
+        io.to(user.room).emit('receive_message', {
+          ...data,
+          timestamp: Date.now(),
+          streakCount
+        });
+      }
+    }
+
     console.log('Broadcasting message to room:', room);
-    io.to(room).emit('receive_message', newMessage);
   });
 
   socket.on('edit_message', ({ messageId, newText, room }) => {
@@ -177,6 +309,47 @@ io.on('connection', (socket) => {
     console.log('A user disconnected:', socket.id);
   });
 });
+
+app.post('/api/purchase-badge', async (req, res) => {
+  const { username, badgeId } = req.body;
+  const user = await User.findOne({ username });
+  if (user) {
+    user.purchasedBadges.push(badgeId);
+    await user.save();
+    res.json({ success: true, purchasedBadges: user.purchasedBadges });
+  } else {
+    res.status(404).json({ success: false, message: 'User not found' });
+  }
+});
+
+app.post('/api/request-verification', async (req, res) => {
+  const { username } = req.body;
+  const user = await User.findOne({ username });
+  if (user) {
+    // In a real-world scenario, this would trigger an admin review process
+    user.verificationBadge = true;
+    await user.save();
+    res.json({ success: true, verificationBadge: user.verificationBadge });
+  } else {
+    res.status(404).json({ success: false, message: 'User not found' });
+  }
+});
+
+async function updateStreak(user1Id, user2Id) {
+  let streak = await Streak.findOne({ users: { $all: [user1Id, user2Id] } });
+  if (streak) {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    if (streak.lastInteraction < oneDayAgo) {
+      streak.count += 1;
+    }
+    streak.lastInteraction = new Date();
+    await streak.save();
+  } else {
+    streak = new Streak({ users: [user1Id, user2Id] });
+    await streak.save();
+  }
+  return streak.count;
+}
 
 const PORT = process.env.PORT || 3000;
 
