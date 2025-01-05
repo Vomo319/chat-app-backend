@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(cors());
@@ -33,6 +34,7 @@ const rooms = new Map();
 const messages = new Map();
 const privateMessages = new Map();
 const userProfiles = new Map();
+const posts = new Map();
 
 const FIXED_GROUP = 'main-group';
 
@@ -62,6 +64,70 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
 app.get('/', (req, res) => {
   res.send('Chat App Backend is running!');
+});
+
+app.get('/api/posts', (req, res) => {
+  const allPosts = Array.from(posts.values());
+  res.json(allPosts);
+});
+
+app.post('/api/posts', upload.single('media'), (req, res) => {
+  const { content, username } = req.body;
+  const mediaFile = req.file;
+
+  if (!content && !mediaFile) {
+    return res.status(400).json({ error: 'Post must contain either content or media' });
+  }
+
+  const newPost = {
+    id: uuidv4(),
+    username,
+    content,
+    mediaUrl: mediaFile ? `/uploads/${mediaFile.filename}` : null,
+    mediaType: mediaFile ? (mediaFile.mimetype.startsWith('image/') ? 'image' : 'video') : null,
+    likes: 0,
+    comments: 0,
+    timestamp: Date.now()
+  };
+
+  posts.set(newPost.id, newPost);
+  res.status(201).json(newPost);
+});
+
+app.post('/api/posts/:postId/like', (req, res) => {
+  const { postId } = req.params;
+  const post = posts.get(postId);
+
+  if (!post) {
+    return res.status(404).json({ error: 'Post not found' });
+  }
+
+  post.likes += 1;
+  res.json({ likes: post.likes });
+});
+
+app.post('/api/posts/:postId/comment', (req, res) => {
+  const { postId } = req.params;
+  const { comment, username } = req.body;
+  const post = posts.get(postId);
+
+  if (!post) {
+    return res.status(404).json({ error: 'Post not found' });
+  }
+
+  if (!post.comments) {
+    post.comments = [];
+  }
+
+  const newComment = {
+    id: uuidv4(),
+    username,
+    content: comment,
+    timestamp: Date.now()
+  };
+
+  post.comments.push(newComment);
+  res.status(201).json(newComment);
 });
 
 function deleteExpiredMessages(room) {
@@ -303,6 +369,19 @@ io.on('connection', (socket) => {
         io.to(room).emit('message_reaction', { messageId, emoji, username });
       }
     }
+  });
+
+  socket.on('new_post', (postData) => {
+    const newPost = {
+      id: uuidv4(),
+      ...postData,
+      likes: 0,
+      comments: 0,
+      timestamp: Date.now()
+    };
+
+    posts.set(newPost.id, newPost);
+    io.emit('new_post', newPost);
   });
 
   socket.on('disconnect', () => {
