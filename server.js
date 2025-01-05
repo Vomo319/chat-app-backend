@@ -221,6 +221,9 @@ io.on('connection', (socket) => {
       console.log('User joined successfully:', { username, room });
       socket.emit('join_success', { username });
 
+      // Emit user online event
+      io.to(room).emit('user_online', username);
+
       // Increment streak count
       userProfile.streakCount++;
       if (userProfile.streakCount % 7 === 0) {
@@ -396,6 +399,9 @@ io.on('connection', (socket) => {
         if (rooms.get(room).size === 0) {
           rooms.delete(room);
         } else {
+          // Emit user offline event
+          io.to(room).emit('user_offline', username);
+          
           const roomUsers = Array.from(rooms.get(room))
             .map(id => {
               const user = users.get(id);
