@@ -4,7 +4,10 @@
   "description": "Backend for the chat application",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
   },
   "dependencies": {
     "express": "^4.17.1",
