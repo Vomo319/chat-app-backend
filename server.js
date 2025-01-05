@@ -65,7 +65,7 @@ function deleteExpiredMessages(room) {
   const roomMessages = messages.get(room) || [];
   const now = Date.now();
   const updatedMessages = roomMessages.filter(msg => {
-    if (msg.duration && now - msg.timestamp > msg.duration * 1000) {
+    if (msg.duration && msg.seenBy.length > 1 && now - msg.firstSeenTimestamp > msg.duration * 1000) {
       io.to(room).emit('message_deleted', { messageId: msg.id });
       return false;
     }
@@ -176,7 +176,7 @@ io.on('connection', (socket) => {
       replyTo, 
       seenBy: [username], 
       reactions: {},
-      expirationTime: null
+      firstSeenTimestamp: null  
     };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
@@ -249,11 +249,11 @@ io.on('connection', (socket) => {
     const message = roomMessages.find(msg => msg.id === messageId);
     if (message && !message.seenBy.includes(username)) {
       message.seenBy.push(username);
-      if (message.seenBy.length === 2 && message.duration) {
-        message.expirationTime = Date.now() + message.duration * 1000;
+      if (message.seenBy.length === 2) {
+        message.firstSeenTimestamp = Date.now();
       }
       console.log('Updating seen status for message:', messageId);
-      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy, expirationTime: message.expirationTime });
+      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy });
     }
   });
 
@@ -336,4 +336,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
