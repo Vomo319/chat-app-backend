@@ -1,338 +1,97 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const crypto = require('crypto');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+'use client'
 
-const app = express();
-app.use(cors());
-app.use('/uploads', express.static('uploads'));
+import { useState, useRef, useEffect } from 'react'
+import { Button } from "@/components/ui/button"
+import { Mic, Square, Send } from 'lucide-react'
 
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
+interface VoiceRecorderProps {
+  onRecordingComplete: (blob: Blob) => void
 }
 
-const users = new Map();
-const rooms = new Map();
-const messages = new Map();
-const privateMessages = new Map();
-const userProfiles = new Map();
+export function VoiceRecorder({ onRecordingComplete }: VoiceRecorderProps) {
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-const FIXED_GROUP = 'main-group';
-
-// Simple hash function using SHA-256
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
-
-// Set up multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage: storage });
-
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (req.file) {
-    res.json({ filename: req.file.filename });
-  } else {
-    res.status(400).send('No file uploaded.');
-  }
-});
-
-app.get('/', (req, res) => {
-  res.send('Chat App Backend is running!');
-});
-
-function deleteExpiredMessages(room) {
-  const roomMessages = messages.get(room) || [];
-  const now = Date.now();
-  const updatedMessages = roomMessages.filter(msg => {
-    if (msg.duration && msg.seenBy.length > 1 && now - msg.firstSeenTimestamp > msg.duration * 1000) {
-      io.to(room).emit('message_deleted', { messageId: msg.id });
-      return false;
-    }
-    return true;
-  });
-  messages.set(room, updatedMessages);
-}
-
-setInterval(() => {
-  for (const room of rooms.keys()) {
-    deleteExpiredMessages(room);
-  }
-}, 1000);
-
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
-
-  socket.on('register', ({ username, password }) => {
-    if (userProfiles.has(username)) {
-      socket.emit('register_error', 'Username already exists');
-    } else {
-      try {
-        const hashedPassword = hashPassword(password);
-        userProfiles.set(username, {
-          password: hashedPassword,
-          followers: [],
-          following: [],
-          verified: false,
-          streakCount: 0,
-          stars: 0
-        });
-        socket.emit('register_success');
-      } catch (error) {
-        console.error('Error hashing password:', error);
-        socket.emit('register_error', 'Registration failed');
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
       }
     }
-  });
+  }, [])
 
-  socket.on('join_room', ({ username, room, password }) => {
-    console.log('Join room attempt:', { username, room });
-
-    const userProfile = userProfiles.get(username);
-    if (!userProfile) {
-      socket.emit('join_error', 'User not found');
-      return;
-    }
-
+  const startRecording = async () => {
     try {
-      const hashedPassword = hashPassword(password);
-      if (hashedPassword !== userProfile.password) {
-        console.log('Invalid password attempt');
-        socket.emit('join_error', 'Invalid password');
-        return;
-      }
-
-      socket.join(room);
-      users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
-
-      if (!rooms.has(room)) {
-        rooms.set(room, new Set());
-      }
-      rooms.get(room).add(socket.id);
-
-      if (!messages.has(room)) {
-        messages.set(room, []);
-      }
-
-      // Send existing messages to the user
-      const roomMessages = messages.get(room) || [];
-      socket.emit('message_history', roomMessages);
-
-      const roomUsers = Array.from(rooms.get(room)).map(id => {
-        const user = users.get(id);
-        return {
-          ...user,
-          followers: userProfiles.get(user.username).followers.length,
-          verified: userProfiles.get(user.username).verified
-        };
-      }).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaRecorderRef.current = new MediaRecorder(stream)
       
-      console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username });
-
-      // Increment streak count
-      userProfile.streakCount++;
-      if (userProfile.streakCount % 7 === 0) {
-        userProfile.stars++;
-        socket.emit('star_earned');
-      }
-    } catch (error) {
-      console.error('Error during join room:', error);
-      socket.emit('join_error', 'An error occurred while joining the room');
-    }
-  });
-
-  socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration, replyTo } = data;
-    console.log('Received message:', data);
-
-    const newMessage = { 
-      id, 
-      message, 
-      username, 
-      timestamp, 
-      duration, 
-      replyTo, 
-      seenBy: [username], 
-      reactions: {},
-      firstSeenTimestamp: null  
-    };
-    const roomMessages = messages.get(room) || [];
-    roomMessages.push(newMessage);
-    messages.set(room, roomMessages);
-
-    console.log('Broadcasting message to room:', room);
-    io.to(room).emit('receive_message', newMessage);
-  });
-
-  socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
-    const sender = Array.from(users.values()).find(user => user.id === senderId);
-    const receiver = Array.from(users.values()).find(user => user.id === receiverId);
-
-    if (sender && receiver) {
-      const privateMessage = {
-        id: Date.now().toString(),
-        senderId,
-        receiverId,
-        senderUsername: sender.username,
-        message,
-        timestamp: Date.now(),
-        duration,
-        replyTo
-      };
-
-      if (!privateMessages.has(senderId)) {
-        privateMessages.set(senderId, []);
-      }
-      if (!privateMessages.has(receiverId)) {
-        privateMessages.set(receiverId, []);
-      }
-
-      privateMessages.get(senderId).push(privateMessage);
-      privateMessages.get(receiverId).push(privateMessage);
-
-      io.to(receiverId).emit('receive_private_message', privateMessage);
-      socket.emit('private_message_sent', privateMessage);
-    }
-  });
-
-  socket.on('follow_user', ({ followerUsername, followedUsername }) => {
-    const followerProfile = userProfiles.get(followerUsername);
-    const followedProfile = userProfiles.get(followedUsername);
-
-    if (followerProfile && followedProfile) {
-      if (!followedProfile.followers.includes(followerUsername)) {
-        followedProfile.followers.push(followerUsername);
-        followerProfile.following.push(followedUsername);
-        socket.emit('follow_success', { followedUsername });
-        io.to(followedUsername).emit('new_follower', { followerUsername });
-      }
-    }
-  });
-
-  socket.on('edit_message', ({ messageId, newText, room }) => {
-    console.log('Edit message request:', { messageId, newText, room });
-    const roomMessages = messages.get(room) || [];
-    const messageIndex = roomMessages.findIndex(msg => msg.id === messageId);
-    if (messageIndex !== -1) {
-      roomMessages[messageIndex].message = newText;
-      roomMessages[messageIndex].isEdited = true;
-      console.log('Message edited, broadcasting to room:', room);
-      io.to(room).emit('message_edited', { messageId, newText });
-    }
-  });
-
-  socket.on('message_seen', ({ messageId, username, room }) => {
-    console.log('Message seen:', { messageId, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message && !message.seenBy.includes(username)) {
-      message.seenBy.push(username);
-      if (message.seenBy.length === 2) {
-        message.firstSeenTimestamp = Date.now();
-      }
-      console.log('Updating seen status for message:', messageId);
-      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy });
-    }
-  });
-
-  socket.on('delete_message', ({ messageId, room }) => {
-    console.log('Delete message request:', { messageId, room });
-    const roomMessages = messages.get(room) || [];
-    const updatedMessages = roomMessages.filter(msg => msg.id !== messageId);
-    messages.set(room, updatedMessages);
-    console.log('Message deleted, broadcasting to room:', room);
-    io.to(room).emit('message_deleted', { messageId });
-  });
-
-  socket.on('update_user_status', ({ isActive, room }) => {
-    console.log('User status update:', socket.id, isActive);
-    const user = users.get(socket.id);
-    if (user) {
-      user.isActive = isActive;
-      const roomUsers = Array.from(rooms.get(room)).map(id => users.get(id)).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
-      io.to(room).emit('user_status_update', { userId: socket.id, isActive });
-    }
-  });
-
-  socket.on('typing_start', ({ username, room }) => {
-    console.log('User started typing:', username);
-    socket.to(room).emit('typing_start', { username });
-  });
-
-  socket.on('typing_end', ({ username, room }) => {
-    console.log('User stopped typing:', username);
-    socket.to(room).emit('typing_end', { username });
-  });
-
-  socket.on('add_reaction', ({ messageId, emoji, username, room }) => {
-    console.log('Add reaction:', { messageId, emoji, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message) {
-      if (!message.reactions[emoji]) {
-        message.reactions[emoji] = [];
-      }
-      if (!message.reactions[emoji].includes(username)) {
-        message.reactions[emoji].push(username);
-        io.to(room).emit('message_reaction', { messageId, emoji, username });
-      }
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const user = users.get(socket.id);
-    if (user) {
-      const { username, room } = user;
-      users.delete(socket.id);
-      
-      if (rooms.has(room)) {
-        rooms.get(room).delete(socket.id);
-        if (rooms.get(room).size === 0) {
-          rooms.delete(room);
-        } else {
-          const roomUsers = Array.from(rooms.get(room))
-            .map(id => {
-              const user = users.get(id);
-              return {
-                ...user,
-                followers: userProfiles.get(user.username).followers.length,
-                verified: userProfiles.get(user.username).verified
-              };
-            })
-            .filter(Boolean);
-          io.to(room).emit('user_list', roomUsers);
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
         }
       }
+
+      mediaRecorderRef.current.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        onRecordingComplete(blob)
+        chunksRef.current = []
+      }
+
+      mediaRecorderRef.current.start()
+      setIsRecording(true)
+      timerRef.current = setInterval(() => {
+        setRecordingTime((prevTime) => prevTime + 1)
+      }, 1000)
+    } catch (error) {
+      console.error('Error accessing microphone:', error)
     }
-    console.log('A user disconnected:', socket.id);
-  });
-});
+  }
 
-const PORT = process.env.PORT || 3000;
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+      }
+      setRecordingTime(0)
+    }
+  }
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  const formatTime = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = seconds % 60
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+  }
+
+  return (
+    <div className="flex items-center space-x-2">
+      {isRecording ? (
+        <>
+          <Button
+            variant="destructive"
+            size="icon"
+            onClick={stopRecording}
+            className="h-10 w-10 rounded-full"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+          <span className="text-sm">{formatTime(recordingTime)}</span>
+        </>
+      ) : (
+        <Button
+          variant="secondary"
+          size="icon"
+          onClick={startRecording}
+          className="h-10 w-10 rounded-full"
+        >
+          <Mic className="h-4 w-4" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
