@@ -410,6 +410,60 @@ io.on('connection', (socket) => {
     io.emit('new_post', newPost);
   });
 
+  socket.on('get_posts', () => {
+    const allPosts = Array.from(posts.values());
+    socket.emit('posts', allPosts);
+  });
+
+  socket.on('create_post', (postData) => {
+    const newPost = {
+      id: uuidv4(),
+      ...postData,
+      likes: 0,
+      comments: [],
+      timestamp: Date.now()
+    };
+    posts.set(newPost.id, newPost);
+    io.emit('new_post', newPost);
+  });
+
+  socket.on('like_post', ({ postId }) => {
+    const post = posts.get(postId);
+    if (post) {
+      post.likes += 1;
+      io.emit('update_post', post);
+    }
+  });
+
+  socket.on('comment_post', ({ postId, comment, username }) => {
+    const post = posts.get(postId);
+    if (post) {
+      const newComment = {
+        id: uuidv4(),
+        username,
+        content: comment,
+        timestamp: Date.now()
+      };
+      post.comments.push(newComment);
+      io.emit('update_post', post);
+    }
+  });
+
+  socket.on('follow_user', ({ followerUsername, followedUsername }) => {
+    const followerProfile = userProfiles.get(followerUsername);
+    const followedProfile = userProfiles.get(followedUsername);
+
+    if (followerProfile && followedProfile) {
+      if (!followedProfile.followers.includes(followerUsername)) {
+        followedProfile.followers.push(followerUsername);
+        followerProfile.following.push(followedUsername);
+        socket.emit('follow_success', { followedUsername });
+        io.to(followedUsername).emit('new_follower', { followerUsername });
+      }
+    }
+  });
+
+
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
@@ -470,4 +524,3 @@ setInterval(() => {
 app.get('/ping', (req, res) => {
   res.send('pong');
 });
-
