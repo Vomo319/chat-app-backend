@@ -9,34 +9,6 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
-function saveData() {
-  const data = {
-    users: Array.from(users.entries()),
-    userProfiles: Array.from(userProfiles.entries()),
-    messages: Array.from(messages.entries()),
-    privateMessages: Array.from(privateMessages.entries()),
-  };
-  fs.writeFileSync(path.join(__dirname, 'data.json'), JSON.stringify(data));
-}
-
-function loadData() {
-  try {
-    const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'data.json'), 'utf8'));
-    users = new Map(data.users);
-    userProfiles = new Map(data.userProfiles);
-    messages = new Map(data.messages);
-    privateMessages = new Map(data.privateMessages);
-  } catch (error) {
-    console.error('Error loading data:', error);
-  }
-}
-
-// Load data when the server starts
-loadData();
-
-// Save data periodically (every 5 minutes)
-setInterval(saveData, 5 * 60 * 1000);
-
 const app = express();
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
@@ -196,7 +168,6 @@ io.on('connection', (socket) => {
           stars: 0
         });
         socket.emit('register_success');
-        saveData(); // Save data after successful registration
       } catch (error) {
         console.error('Error hashing password:', error);
         socket.emit('register_error', 'Registration failed');
@@ -220,10 +191,6 @@ io.on('connection', (socket) => {
         socket.emit('join_error', 'Invalid password');
         return;
       }
-
-      // Create a session token (you might want to use a more secure method in production)
-      const sessionToken = Math.random().toString(36).substring(2, 15);
-      userProfile.sessionToken = sessionToken;
 
       socket.join(room);
       users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
@@ -252,7 +219,7 @@ io.on('connection', (socket) => {
       io.to(room).emit('user_list', roomUsers);
       
       console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username, sessionToken });
+      socket.emit('join_success', { username });
 
       // Emit user online event
       io.to(room).emit('user_online', username);
@@ -263,22 +230,9 @@ io.on('connection', (socket) => {
         userProfile.stars++;
         socket.emit('star_earned');
       }
-
-      saveData(); // Save data after successful join
     } catch (error) {
       console.error('Error during join room:', error);
       socket.emit('join_error', 'An error occurred while joining the room');
-    }
-  });
-
-  socket.on('rejoin_with_token', ({ username, sessionToken }) => {
-    const userProfile = userProfiles.get(username);
-    if (userProfile && userProfile.sessionToken === sessionToken) {
-      // Session is valid, allow rejoin
-      socket.emit('rejoin_success', { username });
-      // Implement the rest of the join logic here (similar to join_room)
-    } else {
-      socket.emit('rejoin_error', 'Invalid session');
     }
   });
 
