@@ -237,7 +237,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration, replyTo } = data;
+    const { room, id, message, username, timestamp, duration, replyTo, snapUrl, snapText } = data;
     console.log('Received message:', data);
 
     const newMessage = { 
@@ -249,7 +249,10 @@ io.on('connection', (socket) => {
       replyTo, 
       seenBy: [username], 
       reactions: {},
-      firstSeenTimestamp: null  
+      firstSeenTimestamp: null,
+      type: snapUrl ? 'snap' : 'message',
+      snapUrl,
+      snapText
     };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
