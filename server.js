@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const OneSignal = require('onesignal-node');
 
 const app = express();
 app.use(cors());
@@ -19,6 +20,11 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"]
   }
+});
+
+// Initialize OneSignal
+const oneSignalClient = new OneSignal.Client({
+  app: { appId: process.env.ONESIGNAL_APP_ID, apiKey: process.env.ONESIGNAL_API_KEY }
 });
 
 // Ensure uploads directory exists
@@ -236,8 +242,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration, replyTo, snapUrl, snapText } = data;
+  socket.on('send_message', async (data) => {
+    const { room, id, message, username, timestamp, duration, replyTo } = data;
     console.log('Received message:', data);
 
     const newMessage = { 
@@ -249,10 +255,7 @@ io.on('connection', (socket) => {
       replyTo, 
       seenBy: [username], 
       reactions: {},
-      firstSeenTimestamp: null,
-      type: snapUrl ? 'snap' : 'message',
-      snapUrl,
-      snapText
+      firstSeenTimestamp: null  
     };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
@@ -260,6 +263,22 @@ io.on('connection', (socket) => {
 
     console.log('Broadcasting message to room:', room);
     io.to(room).emit('receive_message', newMessage);
+
+    // Send push notification to all users in the room except the sender
+    const roomUsers = Array.from(rooms.get(room) || []);
+    for (const userId of roomUsers) {
+      const user = users.get(userId);
+      if (user && user.username !== username) {
+        try {
+          await oneSignalClient.createNotification({
+            contents: { en: `New message from ${username}: ${message}` },
+            include_player_ids: [user.oneSignalPlayerId]
+          });
+        } catch (error) {
+          console.error('Error sending push notification:', error);
+        }
+      }
+    }
   });
 
   socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
