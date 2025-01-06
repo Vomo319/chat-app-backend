@@ -8,7 +8,34 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-const OneSignal = require('onesignal-node');
+
+function saveData() {
+  const data = {
+    users: Array.from(users.entries()),
+    userProfiles: Array.from(userProfiles.entries()),
+    messages: Array.from(messages.entries()),
+    privateMessages: Array.from(privateMessages.entries()),
+  };
+  fs.writeFileSync(path.join(__dirname, 'data.json'), JSON.stringify(data));
+}
+
+function loadData() {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'data.json'), 'utf8'));
+    users = new Map(data.users);
+    userProfiles = new Map(data.userProfiles);
+    messages = new Map(data.messages);
+    privateMessages = new Map(data.privateMessages);
+  } catch (error) {
+    console.error('Error loading data:', error);
+  }
+}
+
+// Load data when the server starts
+loadData();
+
+// Save data periodically (every 5 minutes)
+setInterval(saveData, 5 * 60 * 1000);
 
 const app = express();
 app.use(cors());
@@ -20,11 +47,6 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"]
   }
-});
-
-// Initialize OneSignal
-const oneSignalClient = new OneSignal.Client({
-  app: { appId: process.env.ONESIGNAL_APP_ID, apiKey: process.env.ONESIGNAL_API_KEY }
 });
 
 // Ensure uploads directory exists
@@ -174,6 +196,7 @@ io.on('connection', (socket) => {
           stars: 0
         });
         socket.emit('register_success');
+        saveData(); // Save data after successful registration
       } catch (error) {
         console.error('Error hashing password:', error);
         socket.emit('register_error', 'Registration failed');
@@ -197,6 +220,10 @@ io.on('connection', (socket) => {
         socket.emit('join_error', 'Invalid password');
         return;
       }
+
+      // Create a session token (you might want to use a more secure method in production)
+      const sessionToken = Math.random().toString(36).substring(2, 15);
+      userProfile.sessionToken = sessionToken;
 
       socket.join(room);
       users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
@@ -225,7 +252,7 @@ io.on('connection', (socket) => {
       io.to(room).emit('user_list', roomUsers);
       
       console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username });
+      socket.emit('join_success', { username, sessionToken });
 
       // Emit user online event
       io.to(room).emit('user_online', username);
@@ -236,13 +263,26 @@ io.on('connection', (socket) => {
         userProfile.stars++;
         socket.emit('star_earned');
       }
+
+      saveData(); // Save data after successful join
     } catch (error) {
       console.error('Error during join room:', error);
       socket.emit('join_error', 'An error occurred while joining the room');
     }
   });
 
-  socket.on('send_message', async (data) => {
+  socket.on('rejoin_with_token', ({ username, sessionToken }) => {
+    const userProfile = userProfiles.get(username);
+    if (userProfile && userProfile.sessionToken === sessionToken) {
+      // Session is valid, allow rejoin
+      socket.emit('rejoin_success', { username });
+      // Implement the rest of the join logic here (similar to join_room)
+    } else {
+      socket.emit('rejoin_error', 'Invalid session');
+    }
+  });
+
+  socket.on('send_message', (data) => {
     const { room, id, message, username, timestamp, duration, replyTo } = data;
     console.log('Received message:', data);
 
@@ -263,22 +303,6 @@ io.on('connection', (socket) => {
 
     console.log('Broadcasting message to room:', room);
     io.to(room).emit('receive_message', newMessage);
-
-    // Send push notification to all users in the room except the sender
-    const roomUsers = Array.from(rooms.get(room) || []);
-    for (const userId of roomUsers) {
-      const user = users.get(userId);
-      if (user && user.username !== username) {
-        try {
-          await oneSignalClient.createNotification({
-            contents: { en: `New message from ${username}: ${message}` },
-            include_player_ids: [user.oneSignalPlayerId]
-          });
-        } catch (error) {
-          console.error('Error sending push notification:', error);
-        }
-      }
-    }
   });
 
   socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
@@ -410,60 +434,6 @@ io.on('connection', (socket) => {
     io.emit('new_post', newPost);
   });
 
-  socket.on('get_posts', () => {
-    const allPosts = Array.from(posts.values());
-    socket.emit('posts', allPosts);
-  });
-
-  socket.on('create_post', (postData) => {
-    const newPost = {
-      id: uuidv4(),
-      ...postData,
-      likes: 0,
-      comments: [],
-      timestamp: Date.now()
-    };
-    posts.set(newPost.id, newPost);
-    io.emit('new_post', newPost);
-  });
-
-  socket.on('like_post', ({ postId }) => {
-    const post = posts.get(postId);
-    if (post) {
-      post.likes += 1;
-      io.emit('update_post', post);
-    }
-  });
-
-  socket.on('comment_post', ({ postId, comment, username }) => {
-    const post = posts.get(postId);
-    if (post) {
-      const newComment = {
-        id: uuidv4(),
-        username,
-        content: comment,
-        timestamp: Date.now()
-      };
-      post.comments.push(newComment);
-      io.emit('update_post', post);
-    }
-  });
-
-  socket.on('follow_user', ({ followerUsername, followedUsername }) => {
-    const followerProfile = userProfiles.get(followerUsername);
-    const followedProfile = userProfiles.get(followedUsername);
-
-    if (followerProfile && followedProfile) {
-      if (!followedProfile.followers.includes(followerUsername)) {
-        followedProfile.followers.push(followerUsername);
-        followerProfile.following.push(followedUsername);
-        socket.emit('follow_success', { followedUsername });
-        io.to(followedUsername).emit('new_follower', { followerUsername });
-      }
-    }
-  });
-
-
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
@@ -524,4 +494,3 @@ setInterval(() => {
 app.get('/ping', (req, res) => {
   res.send('pong');
 });
-
