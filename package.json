@@ -1,25 +1,22 @@
 {
-  "name": "chat-app-backend",
-  "version": "1.0.0",
-  "description": "Backend for the chat application",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.6.1",
-    "cors": "^2.8.5",
-    "multer": "^1.4.5-lts.1",
-    "uuid": "^9.0.0",
-    "node-fetch": "^3.3.1"
-  },
-  "devDependencies": {
-    "nodemon": "^2.0.22"
-  },
-  "engines": {
-    "node": ">=14.0.0"
-  }
+  "name": "Fun Chat PWA",
+  "short_name": "Fun Chat",
+  "description": "A real-time chat application with cool features",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
 }
 
