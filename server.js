@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const webpush = require('web-push');
 
 const app = express();
 app.use(cors());
@@ -35,6 +36,7 @@ const messages = new Map();
 const privateMessages = new Map();
 const userProfiles = new Map();
 const posts = new Map();
+const subscriptions = []; // Add subscriptions array
 
 const FIXED_GROUP = 'main-group';
 
@@ -143,12 +145,20 @@ function deleteExpiredMessages(room) {
   messages.set(room, updatedMessages);
 }
 
-// Run deleteExpiredMessages every 5 seconds
 setInterval(() => {
   for (const room of rooms.keys()) {
     deleteExpiredMessages(room);
   }
-}, 5000);
+}, 1000);
+
+// Add this new function to send push notifications
+async function sendPushNotification(subscription, payload) {
+  try {
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+  } catch (error) {
+    console.error('Error sending push notification:', error);
+  }
+}
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -224,6 +234,17 @@ io.on('connection', (socket) => {
       // Emit user online event
       io.to(room).emit('user_online', username);
 
+      // After successful join, send notification to all other users
+      socket.to(room).emit('user_joined', { username });
+
+      // Send push notification to all subscribed users
+      subscriptions.forEach(subscription => {
+        sendPushNotification(subscription, {
+          title: 'New User Joined',
+          body: `${username} has joined the chat.`
+        });
+      });
+
       // Increment streak count
       userProfile.streakCount++;
       if (userProfile.streakCount % 7 === 0) {
@@ -249,7 +270,7 @@ io.on('connection', (socket) => {
       replyTo, 
       seenBy: [username], 
       reactions: {},
-      firstSeenTimestamp: Date.now()  // Set the initial timestamp when the message is sent
+      firstSeenTimestamp: null  
     };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
@@ -257,6 +278,14 @@ io.on('connection', (socket) => {
 
     console.log('Broadcasting message to room:', room);
     io.to(room).emit('receive_message', newMessage);
+
+    // Send push notification for new message
+    subscriptions.forEach(subscription => {
+      sendPushNotification(subscription, {
+        title: 'New Message',
+        body: `${data.username}: ${data.message.substring(0, 50)}...`
+      });
+    });
   });
 
   socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
@@ -272,8 +301,7 @@ io.on('connection', (socket) => {
         message,
         timestamp: Date.now(),
         duration,
-        replyTo,
-        firstSeenTimestamp: Date.now()  // Set the initial timestamp when the message is sent
+        replyTo
       };
 
       if (!privateMessages.has(senderId)) {
@@ -323,7 +351,7 @@ io.on('connection', (socket) => {
     const message = roomMessages.find(msg => msg.id === messageId);
     if (message && !message.seenBy.includes(username)) {
       message.seenBy.push(username);
-      if (message.seenBy.length === 2 && !message.firstSeenTimestamp) {
+      if (message.seenBy.length === 2) {
         message.firstSeenTimestamp = Date.now();
       }
       console.log('Updating seen status for message:', messageId);
