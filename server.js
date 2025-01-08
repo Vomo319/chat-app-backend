@@ -7,7 +7,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
 app.use(cors());
@@ -144,11 +143,12 @@ function deleteExpiredMessages(room) {
   messages.set(room, updatedMessages);
 }
 
+// Run deleteExpiredMessages every 5 seconds
 setInterval(() => {
   for (const room of rooms.keys()) {
     deleteExpiredMessages(room);
   }
-}, 1000);
+}, 5000);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -249,7 +249,7 @@ io.on('connection', (socket) => {
       replyTo, 
       seenBy: [username], 
       reactions: {},
-      firstSeenTimestamp: null  
+      firstSeenTimestamp: Date.now()  // Set the initial timestamp when the message is sent
     };
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
@@ -272,7 +272,8 @@ io.on('connection', (socket) => {
         message,
         timestamp: Date.now(),
         duration,
-        replyTo
+        replyTo,
+        firstSeenTimestamp: Date.now()  // Set the initial timestamp when the message is sent
       };
 
       if (!privateMessages.has(senderId)) {
@@ -322,7 +323,7 @@ io.on('connection', (socket) => {
     const message = roomMessages.find(msg => msg.id === messageId);
     if (message && !message.seenBy.includes(username)) {
       message.seenBy.push(username);
-      if (message.seenBy.length === 2) {
+      if (message.seenBy.length === 2 && !message.firstSeenTimestamp) {
         message.firstSeenTimestamp = Date.now();
       }
       console.log('Updating seen status for message:', messageId);
@@ -424,28 +425,5 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-});
-
-// Ping mechanism to keep the server active
-const pingInterval = 5 * 60 * 1000; // 5 minutes
-const serverUrl = process.env.SERVER_URL || `http://localhost:${PORT}`;
-
-setInterval(() => {
-  console.log('Pinging server to keep it active');
-  fetch(`${serverUrl}/ping`)
-    .then(response => {
-      if (response.ok) {
-        console.log('Server pinged successfully');
-      } else {
-        console.error('Failed to ping server');
-      }
-    })
-    .catch(error => {
-      console.error('Error pinging server:', error);
-    });
-}, pingInterval);
-
-app.get('/ping', (req, res) => {
-  res.send('pong');
 });
 
