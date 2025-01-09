@@ -1,0 +1,33 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const crypto = require('crypto');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+const webpush = require('web-push');
+
+const app = express();
+app.use(cors());
+app.use('/uploads', express.static('uploads'));
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+// ... (keep existing code)
+
+// Update the port configuration to work with Render
+const PORT = process.env.PORT || 10000;
+
+// Explicitly bind to 0.0.0.0 to accept connections on all network interfaces
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
+});
+
