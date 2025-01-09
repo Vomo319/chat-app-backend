@@ -272,6 +272,12 @@ io.on('connection', (socket) => {
       reactions: {},
       firstSeenTimestamp: null  
     };
+
+    if (message.startsWith('Game Result:')) {
+      newMessage.type = 'system';
+      newMessage.username = 'Game Bot';
+    }
+
     const roomMessages = messages.get(room) || [];
     roomMessages.push(newMessage);
     messages.set(room, roomMessages);
@@ -415,6 +421,26 @@ io.on('connection', (socket) => {
 
     posts.set(newPost.id, newPost);
     io.emit('new_post', newPost);
+  });
+
+  socket.on('game_result', ({ username, result, gameType }) => {
+    const room = users.get(socket.id)?.room;
+    if (room) {
+      io.to(room).emit('receive_message', {
+        id: Date.now().toString(),
+        message: `🎮 ${gameType}: ${username} ${result}`,
+        username: 'Game Bot',
+        timestamp: Date.now(),
+        type: 'system'
+      });
+    }
+  });
+
+  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
+    const room = users.get(socket.id)?.room;
+    if (room) {
+      io.to(room).emit('tic_tac_toe_update', { gameId, player, position });
+    }
   });
 
   socket.on('disconnect', () => {
