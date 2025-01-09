@@ -118,3 +118,11 @@ io.on('connection', (socket) => {
 
 // ... (keep the rest of the server code)
 
+// Update the port configuration to work with Render
+const PORT = process.env.PORT || 10000;
+
+// Explicitly bind to 0.0.0.0 to accept connections on all network interfaces
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
+});
+
