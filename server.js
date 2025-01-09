@@ -437,41 +437,149 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('send_game_invitation', ({ gameId, inviteeId }) => {
+  socket.on('send_game_invitation', ({ gameId, inviteeId, gameType }) => {
     const inviter = users.get(socket.id);
     if (inviter) {
-      io.to(inviteeId).emit('game_invitation', { gameId, inviter: inviter.username });
+      // Create the initial game state
+      games.set(gameId, {
+        id: gameId,
+        type: gameType,
+        players: [socket.id], // Start with the inviter
+        currentTurn: null,
+        board: gameType === 'tictactoe' ? Array(9).fill(null) : null,
+        moves: gameType === 'rockpaperscissors' ? {} : null,
+        word: gameType === 'hangman' ? '' : null,
+        guessedLetters: gameType === 'hangman' ? [] : null,
+        remainingGuesses: gameType === 'hangman' ? 6 : null
+      });
+    
+      io.to(inviteeId).emit('game_invitation', { gameId, inviter: inviter.username, gameType });
     }
   });
 
-  socket.on('accept_game_invitation', ({ gameId }) => {
-    const accepter = users.get(socket.id);
-    if (accepter) {
-      const game = games.get(gameId);
-      if (game) {
-        game.players.push(socket.id);
-        game.currentTurn = game.players[Math.floor(Math.random() * 2)]; // Randomly choose who goes first
-
-        const [player1, player2] = game.players;
-        io.to(player1).emit('game_started', { gameId, opponent: users.get(player2).username, isPlayerTurn: game.currentTurn === player1 });
-        io.to(player2).emit('game_started', { gameId, opponent: users.get(player1).username, isPlayerTurn: game.currentTurn === player2 });
-      }
-    }
-  });
-
-  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
+  socket.on('accept_game_invitation', ({ gameId, gameType }) => {
     const game = games.get(gameId);
-    if (game && game.currentTurn === socket.id && game.board[position] === null) {
-      game.board[position] = player;
-      game.currentTurn = game.players.find(id => id !== socket.id);
+    if (game && game.players.length === 1) {
+      game.players.push(socket.id);
+    
+      // Set initial turn based on game type
+      if (gameType === 'tictactoe' || gameType === 'hangman') {
+        game.currentTurn = game.players[Math.floor(Math.random() * 2)];
+      }
+      // For RPS, both players move simultaneously so no currentTurn needed
+    
+      const [player1, player2] = game.players;
+      const isWordChooser = gameType === 'hangman' ? game.currentTurn === socket.id : undefined;
+    
+      io.to(player1).emit('game_started', { 
+        gameId, 
+        opponent: users.get(player2).username, 
+        gameType,
+        isPlayerTurn: game.currentTurn === player1,
+        isWordChooser: gameType === 'hangman' ? game.currentTurn === player1 : undefined
+      });
+    
+      io.to(player2).emit('game_started', { 
+        gameId, 
+        opponent: users.get(player1).username, 
+        gameType,
+        isPlayerTurn: game.currentTurn === player2,
+        isWordChooser: gameType === 'hangman' ? game.currentTurn === player2 : undefined
+      });
+    }
+  });
 
-      io.to(game.players).emit('tic_tac_toe_update', { gameId, player, position });
+  socket.on('game_move', ({ gameId, player, move }) => {
+    const game = games.get(gameId);
+    if (game && game.players.includes(socket.id)) {
+      switch (game.type) {
+        case 'tictactoe':
+          if (game.currentTurn === socket.id && game.board[move] === null) {
+            game.board[move] = player;
+            game.currentTurn = game.players.find(id => id !== socket.id);
+            io.to(game.players).emit('tic_tac_toe_update', { 
+              gameId, 
+              player, 
+              position: move 
+            });
+          
+            const winner = calculateWinner(game.board);
+            if (winner || game.board.every(cell => cell !== null)) {
+              io.to(game.players).emit('game_over', { 
+                gameId, 
+                winner: winner || 'draw' 
+              });
+              games.delete(gameId);
+            }
+          }
+          break;
 
-      // Check for winner or draw
-      const winner = calculateWinner(game.board);
-      if (winner || game.board.every(cell => cell !== null)) {
-        io.to(game.players).emit('game_over', { gameId, winner: winner || 'draw' });
-        games.delete(gameId);
+        case 'rockpaperscissors':
+          if (!game.moves[socket.id]) {
+            game.moves[socket.id] = move;
+            io.to(game.players).emit('rock_paper_scissors_update', { 
+              player, 
+              choice: move 
+            });
+
+            if (Object.keys(game.moves).length === 2) {
+              const [player1, player2] = game.players;
+              const result = determineRockPaperScissorsWinner(
+                game.moves[player1], 
+                game.moves[player2]
+              );
+              io.to(game.players).emit('game_over', { 
+                gameId, 
+                winner: result === 'draw' ? 'draw' : 
+                  result === 'player1' ? users.get(player1).username : 
+                  users.get(player2).username 
+              });
+              games.delete(gameId);
+            }
+          }
+          break;
+
+        case 'hangman':
+          if (game.currentTurn === socket.id) {
+            if (move.type === 'word') {
+              game.word = move.word.toLowerCase();
+              game.currentTurn = game.players.find(id => id !== socket.id);
+              io.to(game.players).emit('hangman_update', { 
+                type: 'word', 
+                data: { wordLength: game.word.length } 
+              });
+            } else if (move.type === 'guess') {
+              const letter = move.letter.toLowerCase();
+              if (!game.guessedLetters.includes(letter)) {
+                game.guessedLetters.push(letter);
+                if (!game.word.includes(letter)) {
+                  game.remainingGuesses--;
+                }
+              
+                game.currentTurn = game.players.find(id => id !== socket.id);
+                io.to(game.players).emit('hangman_update', { 
+                  type: 'guess', 
+                  data: { 
+                    letter, 
+                    remainingGuesses: game.remainingGuesses 
+                  } 
+                });
+
+                const isWinner = game.word.split('').every(l => 
+                  game.guessedLetters.includes(l)
+                );
+                if (isWinner || game.remainingGuesses === 0) {
+                  io.to(game.players).emit('game_over', { 
+                    gameId, 
+                    winner: isWinner ? 'guesser' : 'wordChooser',
+                    word: game.word 
+                  });
+                  games.delete(gameId);
+                }
+              }
+            }
+          }
+          break;
       }
     }
   });
@@ -495,6 +603,22 @@ io.on('connection', (socket) => {
     }
     return null;
   }
+
+  function determineRockPaperScissorsWinner(choice1, choice2) {
+    if (choice1 === choice2) {
+      return 'draw';
+    }
+    if (
+      (choice1 === 'rock' && choice2 === 'scissors') ||
+      (choice1 === 'scissors' && choice2 === 'paper') ||
+      (choice1 === 'paper' && choice2 === 'rock')
+    ) {
+      return 'player1';
+    } else {
+      return 'player2';
+    }
+  }
+
 
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
