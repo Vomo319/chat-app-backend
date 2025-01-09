@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "funchat1.vercel.app", // In production, replace with your frontend URL
+    origin: "*", // In production, replace with your frontend URL
     methods: ["GET", "POST"]
   }
 });
