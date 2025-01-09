@@ -447,20 +447,14 @@ io.on('connection', (socket) => {
   socket.on('accept_game_invitation', ({ gameId }) => {
     const accepter = users.get(socket.id);
     if (accepter) {
-      const game = {
-        id: gameId,
-        players: [socket.id],
-        board: Array(9).fill(null),
-        currentTurn: socket.id
-      };
-      games.set(gameId, game);
+      const game = games.get(gameId);
+      if (game) {
+        game.players.push(socket.id);
+        game.currentTurn = game.players[Math.floor(Math.random() * 2)]; // Randomly choose who goes first
 
-      // Find the inviter's socket id
-      const inviterSocket = Array.from(users.entries()).find(([_, user]) => user.username === game.inviter);
-      if (inviterSocket) {
-        game.players.push(inviterSocket[0]);
-        io.to(inviterSocket[0]).emit('game_started', { gameId, opponent: accepter.username, isPlayerTurn: true });
-        socket.emit('game_started', { gameId, opponent: game.inviter, isPlayerTurn: false });
+        const [player1, player2] = game.players;
+        io.to(player1).emit('game_started', { gameId, opponent: users.get(player2).username, isPlayerTurn: game.currentTurn === player1 });
+        io.to(player2).emit('game_started', { gameId, opponent: users.get(player1).username, isPlayerTurn: game.currentTurn === player2 });
       }
     }
   });
@@ -470,13 +464,13 @@ io.on('connection', (socket) => {
     if (game && game.currentTurn === socket.id && game.board[position] === null) {
       game.board[position] = player;
       game.currentTurn = game.players.find(id => id !== socket.id);
-      
+
       io.to(game.players).emit('tic_tac_toe_update', { gameId, player, position });
 
       // Check for winner or draw
       const winner = calculateWinner(game.board);
       if (winner || game.board.every(cell => cell !== null)) {
-        io.to(game.players).emit('game_over', { gameId, winner });
+        io.to(game.players).emit('game_over', { gameId, winner: winner || 'draw' });
         games.delete(gameId);
       }
     }
@@ -507,7 +501,7 @@ io.on('connection', (socket) => {
     if (user) {
       const { username, room } = user;
       users.delete(socket.id);
-      
+
       // End any active games for this user
       for (const [gameId, game] of games.entries()) {
         if (game.players.includes(socket.id)) {
@@ -518,7 +512,7 @@ io.on('connection', (socket) => {
           games.delete(gameId);
         }
       }
-      
+
       if (rooms.has(room)) {
         rooms.get(room).delete(socket.id);
         if (rooms.get(room).size === 0) {
@@ -526,7 +520,7 @@ io.on('connection', (socket) => {
         } else {
           // Emit user offline event
           io.to(room).emit('user_offline', username);
-          
+
           const roomUsers = Array.from(rooms.get(room))
             .map(id => {
               const user = users.get(id);
