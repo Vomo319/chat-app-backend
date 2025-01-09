@@ -11,6 +11,7 @@ const webpush = require('web-push');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 
 const server = http.createServer(app);
@@ -21,9 +22,63 @@ const io = new Server(server, {
   }
 });
 
-// ... (keep existing code)
-
+// Initialize storage for users and their profiles
+const users = new Map();
+const userProfiles = new Map();
+const rooms = new Map();
+const messages = new Map();
 const subscriptions = new Map();
+
+// Add a REST endpoint for registration
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  
+  try {
+    if (userProfiles.has(username)) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    
+    // Create user profile
+    userProfiles.set(username, {
+      password: hashedPassword,
+      followers: [],
+      following: [],
+      verified: false,
+      streakCount: 0,
+      stars: 0
+    });
+
+    console.log(`User registered successfully: ${username}`);
+    res.status(201).json({ message: 'Registration successful' });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// Add a REST endpoint for login verification
+app.post('/api/verify', async (req, res) => {
+  const { username, password } = req.body;
+  
+  try {
+    const userProfile = userProfiles.get(username);
+    if (!userProfile) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    if (hashedPassword !== userProfile.password) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    res.status(200).json({ message: 'Verification successful' });
+  } catch (error) {
+    console.error('Verification error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
 
 // Add this new function to send push notifications
 async function sendPushNotification(username, payload) {
@@ -45,7 +100,31 @@ async function sendPushNotification(username, payload) {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  // ... (keep existing connection code)
+  socket.on('register', async ({ username, password }) => {
+    try {
+      if (userProfiles.has(username)) {
+        socket.emit('register_error', 'Username already exists');
+        return;
+      }
+
+      const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+      
+      userProfiles.set(username, {
+        password: hashedPassword,
+        followers: [],
+        following: [],
+        verified: false,
+        streakCount: 0,
+        stars: 0
+      });
+
+      socket.emit('register_success');
+      console.log(`User registered successfully via socket: ${username}`);
+    } catch (error) {
+      console.error('Registration error:', error);
+      socket.emit('register_error', error.message || 'Registration failed');
+    }
+  });
 
   socket.on('subscribe', ({ username, subscription }) => {
     if (!subscriptions.has(username)) {
@@ -118,7 +197,6 @@ io.on('connection', (socket) => {
 
 // ... (keep the rest of the server code)
 
-// Update the port configuration to work with Render
 const PORT = process.env.PORT || 10000;
 
 // Explicitly bind to 0.0.0.0 to accept connections on all network interfaces
