@@ -161,6 +161,15 @@ async function sendPushNotification(subscription, payload) {
   }
 }
 
+function sendNewMessageNotification(message, receiverSubscription) {
+  const payload = {
+    title: `New message from ${message.username}`,
+    body: message.message.substring(0, 50) + (message.message.length > 50 ? '...' : ''),
+    url: '/'
+  };
+  sendPushNotification(receiverSubscription, payload);
+}
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
@@ -285,6 +294,13 @@ io.on('connection', (socket) => {
 
     console.log('Broadcasting message to room:', room);
     io.to(room).emit('receive_message', newMessage);
+
+    // Send push notification for new message
+    users.forEach(user => {
+      if (user.id !== socket.id && user.subscription) {
+        sendNewMessageNotification(newMessage, user.subscription);
+      }
+    });
 
     // Send push notification for new message
     subscriptions.forEach(subscription => {
