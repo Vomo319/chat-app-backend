@@ -9,6 +9,18 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const webpush = require('web-push');
 
+// Set up VAPID keys
+const vapidKeys = {
+  publicKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+  privateKey: process.env.VAPID_PRIVATE_KEY
+};
+
+webpush.setVapidDetails(
+  'mailto:your-email@example.com',
+  vapidKeys.publicKey,
+  vapidKeys.privateKey
+);
+
 const app = express();
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
