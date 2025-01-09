@@ -438,6 +438,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_game_invitation', ({ gameId, inviteeId, gameType }) => {
+    console.log('Game invitation:', { gameId, inviteeId, gameType });
     const inviter = users.get(socket.id);
     if (inviter) {
       // Create the initial game state
@@ -458,6 +459,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('accept_game_invitation', ({ gameId, gameType }) => {
+    console.log('Game invitation accepted:', { gameId, gameType });
     const game = games.get(gameId);
     if (game && game.players.length === 1) {
       game.players.push(socket.id);
@@ -490,17 +492,18 @@ io.on('connection', (socket) => {
   });
 
   socket.on('game_move', ({ gameId, player, move }) => {
+    console.log('Game move:', { gameId, player, move });
     const game = games.get(gameId);
     if (game && game.players.includes(socket.id)) {
       switch (game.type) {
         case 'tictactoe':
-          if (game.currentTurn === socket.id && game.board[move] === null) {
-            game.board[move] = player;
+          if (game.currentTurn === socket.id && game.board[move.position] === null) {
+            game.board[move.position] = player;
             game.currentTurn = game.players.find(id => id !== socket.id);
             io.to(game.players).emit('tic_tac_toe_update', { 
               gameId, 
               player, 
-              position: move 
+              position: move.position 
             });
           
             const winner = calculateWinner(game.board);
@@ -516,10 +519,10 @@ io.on('connection', (socket) => {
 
         case 'rockpaperscissors':
           if (!game.moves[socket.id]) {
-            game.moves[socket.id] = move;
+            game.moves[socket.id] = move.choice;
             io.to(game.players).emit('rock_paper_scissors_update', { 
               player, 
-              choice: move 
+              choice: move.choice 
             });
 
             if (Object.keys(game.moves).length === 2) {
