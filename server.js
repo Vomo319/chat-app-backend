@@ -37,6 +37,7 @@ const privateMessages = new Map();
 const userProfiles = new Map();
 const posts = new Map();
 const subscriptions = []; // Add subscriptions array
+const games = new Map(); // Added games Map
 
 const FIXED_GROUP = 'main-group';
 
@@ -436,18 +437,87 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
-    const room = users.get(socket.id)?.room;
-    if (room) {
-      io.to(room).emit('tic_tac_toe_update', { gameId, player, position });
+  socket.on('send_game_invitation', ({ gameId, inviteeId }) => {
+    const inviter = users.get(socket.id);
+    if (inviter) {
+      io.to(inviteeId).emit('game_invitation', { gameId, inviter: inviter.username });
     }
   });
+
+  socket.on('accept_game_invitation', ({ gameId }) => {
+    const accepter = users.get(socket.id);
+    if (accepter) {
+      const game = {
+        id: gameId,
+        players: [socket.id],
+        board: Array(9).fill(null),
+        currentTurn: socket.id
+      };
+      games.set(gameId, game);
+
+      // Find the inviter's socket id
+      const inviterSocket = Array.from(users.entries()).find(([_, user]) => user.username === game.inviter);
+      if (inviterSocket) {
+        game.players.push(inviterSocket[0]);
+        io.to(inviterSocket[0]).emit('game_started', { gameId, opponent: accepter.username, isPlayerTurn: true });
+        socket.emit('game_started', { gameId, opponent: game.inviter, isPlayerTurn: false });
+      }
+    }
+  });
+
+  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
+    const game = games.get(gameId);
+    if (game && game.currentTurn === socket.id && game.board[position] === null) {
+      game.board[position] = player;
+      game.currentTurn = game.players.find(id => id !== socket.id);
+      
+      io.to(game.players).emit('tic_tac_toe_update', { gameId, player, position });
+
+      // Check for winner or draw
+      const winner = calculateWinner(game.board);
+      if (winner || game.board.every(cell => cell !== null)) {
+        io.to(game.players).emit('game_over', { gameId, winner });
+        games.delete(gameId);
+      }
+    }
+  });
+
+  function calculateWinner(board) {
+    const lines = [
+      [0, 1, 2],
+      [3, 4, 5],
+      [6, 7, 8],
+      [0, 3, 6],
+      [1, 4, 7],
+      [2, 5, 8],
+      [0, 4, 8],
+      [2, 4, 6],
+    ];
+    for (let i = 0; i < lines.length; i++) {
+      const [a, b, c] = lines[i];
+      if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+        return board[a];
+      }
+    }
+    return null;
+  }
 
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
       const { username, room } = user;
       users.delete(socket.id);
+      
+      // End any active games for this user
+      for (const [gameId, game] of games.entries()) {
+        if (game.players.includes(socket.id)) {
+          const opponent = game.players.find(id => id !== socket.id);
+          if (opponent) {
+            io.to(opponent).emit('game_over', { gameId, winner: 'opponent_disconnected' });
+          }
+          games.delete(gameId);
+        }
+      }
       
       if (rooms.has(room)) {
         rooms.get(room).delete(socket.id);
