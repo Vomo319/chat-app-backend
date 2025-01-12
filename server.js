@@ -36,9 +36,18 @@ const messages = new Map();
 const privateMessages = new Map();
 const userProfiles = new Map();
 const posts = new Map();
-const subscriptions = []; // Add subscriptions array
+const pushSubscriptions = new Map();
 
 const FIXED_GROUP = 'main-group';
+
+// Generate VAPID keys
+const vapidKeys = webpush.generateVAPIDKeys();
+
+webpush.setVapidDetails(
+  'mailto:your-email@example.com',
+  vapidKeys.publicKey,
+  vapidKeys.privateKey
+);
 
 // Simple hash function using SHA-256
 function hashPassword(password) {
@@ -66,6 +75,16 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
 app.get('/', (req, res) => {
   res.send('Chat App Backend is running!');
+});
+
+app.get('/api/vapidPublicKey', (req, res) => {
+  res.json({ publicKey: vapidKeys.publicKey });
+});
+
+app.post('/api/subscribe', (req, res) => {
+  const { subscription, username } = req.body;
+  pushSubscriptions.set(username, subscription);
+  res.status(201).json({});
 });
 
 app.get('/api/posts', (req, res) => {
@@ -151,12 +170,14 @@ setInterval(() => {
   }
 }, 1000);
 
-// Add this new function to send push notifications
-async function sendPushNotification(subscription, payload) {
-  try {
-    await webpush.sendNotification(subscription, JSON.stringify(payload));
-  } catch (error) {
-    console.error('Error sending push notification:', error);
+async function sendPushNotification(username, payload) {
+  const subscription = pushSubscriptions.get(username);
+  if (subscription) {
+    try {
+      await webpush.sendNotification(subscription, JSON.stringify(payload));
+    } catch (error) {
+      console.error('Error sending push notification:', error);
+    }
   }
 }
 
@@ -238,11 +259,13 @@ io.on('connection', (socket) => {
       socket.to(room).emit('user_joined', { username });
 
       // Send push notification to all subscribed users
-      subscriptions.forEach(subscription => {
-        sendPushNotification(subscription, {
-          title: 'New User Joined',
-          body: `${username} has joined the chat.`
-        });
+      roomUsers.forEach(user => {
+        if (user.username !== username) {
+          sendPushNotification(user.username, {
+            title: 'New User Joined',
+            body: `${username} has joined the chat.`
+          });
+        }
       });
 
       // Increment streak count
@@ -285,12 +308,16 @@ io.on('connection', (socket) => {
     console.log('Broadcasting message to room:', room);
     io.to(room).emit('receive_message', newMessage);
 
-    // Send push notification for new message
-    subscriptions.forEach(subscription => {
-      sendPushNotification(subscription, {
-        title: 'New Message',
-        body: `${data.username}: ${data.message.substring(0, 50)}...`
-      });
+    // Send push notification for new message to all users in the room except the sender
+    const roomUsers = Array.from(rooms.get(room) || []);
+    roomUsers.forEach(userId => {
+      const user = users.get(userId);
+      if (user && user.username !== username) {
+        sendPushNotification(user.username, {
+          title: `New message from ${username}`,
+          body: message.substring(0, 50) + (message.length > 50 ? '...' : '')
+        });
+      }
     });
   });
 
@@ -322,6 +349,12 @@ io.on('connection', (socket) => {
 
       io.to(receiverId).emit('receive_private_message', privateMessage);
       socket.emit('private_message_sent', privateMessage);
+
+      // Send push notification for private message
+      sendPushNotification(receiver.username, {
+        title: `New private message from ${sender.username}`,
+        body: message.substring(0, 50) + (message.length > 50 ? '...' : '')
+      });
     }
   });
 
@@ -335,6 +368,12 @@ io.on('connection', (socket) => {
         followerProfile.following.push(followedUsername);
         socket.emit('follow_success', { followedUsername });
         io.to(followedUsername).emit('new_follower', { followerUsername });
+
+        // Send push notification for new follower
+        sendPushNotification(followedUsername, {
+          title: 'New Follower',
+          body: `${followerUsername} is now following you!`
+        });
       }
     }
   });
@@ -387,7 +426,7 @@ io.on('connection', (socket) => {
 
   socket.on('typing_start', ({ username, room }) => {
     console.log('User started typing:', username);
-    socket.to(room).emit('typing_start', { username });
+    socket.tosocket.to(room).emit('typing_start', { username });
   });
 
   socket.on('typing_end', ({ username, room }) => {
@@ -480,3 +519,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
