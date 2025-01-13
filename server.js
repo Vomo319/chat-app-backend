@@ -8,6 +8,8 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const webpush = require('web-push');
+const dotenv = require('dotenv');
+dotenv.config();
 
 let pushNotificationsEnabled = false;
 
@@ -20,11 +22,15 @@ if (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
     );
     pushNotificationsEnabled = true;
     console.log('Push notifications enabled');
+    console.log('Public Key:', process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
+    console.log('Private Key:', process.env.VAPID_PRIVATE_KEY.substring(0, 5) + '...');
   } catch (error) {
     console.error('Failed to set VAPID details:', error);
   }
 } else {
   console.warn('VAPID keys not set. Push notifications will be disabled.');
+  console.log('NEXT_PUBLIC_VAPID_PUBLIC_KEY:', process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
+  console.log('VAPID_PRIVATE_KEY:', process.env.VAPID_PRIVATE_KEY ? 'Set' : 'Not set');
 }
 
 const app = express();
