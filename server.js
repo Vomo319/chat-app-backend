@@ -8,8 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const webpush = require('web-push');
-const dotenv = require('dotenv');
-dotenv.config();
+require('dotenv').config();
 
 let pushNotificationsEnabled = false;
 
