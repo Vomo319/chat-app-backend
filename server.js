@@ -180,7 +180,9 @@ async function sendPushNotification(subscription, payload) {
     return;
   }
   try {
+    console.log('Sending push notification:', payload);
     await webpush.sendNotification(subscription, JSON.stringify(payload));
+    console.log('Push notification sent successfully');
   } catch (error) {
     console.error('Error sending push notification:', error);
   }
@@ -320,7 +322,7 @@ io.on('connection', (socket) => {
     subscriptions.forEach(subscription => {
       sendPushNotification(subscription, {
         title: 'New Message',
-        body: `${data.username}: ${data.message.substring(0, 50)}...`
+        body: `${username}: ${message.substring(0, 50)}...`
       });
     });
   });
