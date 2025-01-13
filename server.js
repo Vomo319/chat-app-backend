@@ -9,16 +9,23 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const webpush = require('web-push');
 
-const vapidKeys = {
-  publicKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
-  privateKey: process.env.VAPID_PRIVATE_KEY
-};
+let pushNotificationsEnabled = false;
 
-webpush.setVapidDetails(
-  'mailto:your-email@example.com',
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
-);
+if (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(
+      'mailto:your-email@example.com',
+      process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+      process.env.VAPID_PRIVATE_KEY
+    );
+    pushNotificationsEnabled = true;
+    console.log('Push notifications enabled');
+  } catch (error) {
+    console.error('Failed to set VAPID details:', error);
+  }
+} else {
+  console.warn('VAPID keys not set. Push notifications will be disabled.');
+}
 
 const app = express();
 app.use(cors());
@@ -163,6 +170,10 @@ setInterval(() => {
 }, 1000);
 
 async function sendPushNotification(subscription, payload) {
+  if (!pushNotificationsEnabled) {
+    console.log('Push notification not sent: feature is disabled');
+    return;
+  }
   try {
     await webpush.sendNotification(subscription, JSON.stringify(payload));
   } catch (error) {
