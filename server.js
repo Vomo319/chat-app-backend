@@ -9,6 +9,17 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const webpush = require('web-push');
 
+const vapidKeys = {
+  publicKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+  privateKey: process.env.VAPID_PRIVATE_KEY
+};
+
+webpush.setVapidDetails(
+  'mailto:your-email@example.com',
+  vapidKeys.publicKey,
+  vapidKeys.privateKey
+);
+
 const app = express();
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
@@ -151,7 +162,6 @@ setInterval(() => {
   }
 }, 1000);
 
-// Add this new function to send push notifications
 async function sendPushNotification(subscription, payload) {
   try {
     await webpush.sendNotification(subscription, JSON.stringify(payload));
@@ -183,6 +193,11 @@ io.on('connection', (socket) => {
         socket.emit('register_error', 'Registration failed');
       }
     }
+  });
+
+  socket.on('subscribe', (subscription) => {
+    console.log('New push notification subscription:', subscription);
+    subscriptions.push(subscription);
   });
 
   socket.on('join_room', ({ username, room, password }) => {
@@ -240,7 +255,7 @@ io.on('connection', (socket) => {
       // Send push notification to all subscribed users
       subscriptions.forEach(subscription => {
         sendPushNotification(subscription, {
-          title: 'New User Joined',
+          title: 'New User Online',
           body: `${username} has joined the chat.`
         });
       });
@@ -423,16 +438,23 @@ io.on('connection', (socket) => {
     io.emit('new_post', newPost);
   });
 
-  socket.on('game_result', ({ username, result }) => {
+  socket.on('game_result', ({ username, result, gameType }) => {
     const room = users.get(socket.id)?.room;
     if (room) {
       io.to(room).emit('receive_message', {
         id: Date.now().toString(),
-        message: `🎮 ${username} ${result}`,
+        message: `🎮 ${gameType}: ${username} ${result}`,
         username: 'Game Bot',
         timestamp: Date.now(),
         type: 'system'
       });
+    }
+  });
+
+  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
+    const room = users.get(socket.id)?.room;
+    if (room) {
+      io.to(room).emit('tic_tac_toe_update', { gameId, player, position });
     }
   });
 
