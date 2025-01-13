@@ -1,522 +1,147 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const crypto = require('crypto');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
-const webpush = require('web-push');
+'use client'
 
-const app = express();
-app.use(cors());
-app.use('/uploads', express.static('uploads'));
+import React, { useState, useRef, useEffect, useMemo } from 'react'
+import { Send, Menu, Trash2, Reply, ChevronDown, ChevronRight, Pencil, Clock, UserPlus, Star, ImageIcon, Video, Mic, MoreVertical, Users, Settings, PlusCircle, Moon, Sun, Paperclip, Download, RefreshCw } from 'lucide-react'
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { useSocket } from '@/utils/socket'
+import { useTheme } from 'next-themes'
+import { OnlineUsers } from '@/components/online-users'
+import { EmojiPicker } from '@/components/emoji-picker'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer"
+import { MessageItem } from '@/components/message-item'
+import { VoiceRecorder } from '@/components/voice-recorder'
+import { Separator } from "@/components/ui/separator"
+import { Feed } from '@/components/feed'
+import { toast } from "@/components/ui/use-toast"
+import { TypingIndicator } from '@/components/typing-indicator'
+import { Textarea } from "@/components/ui/textarea"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { AnimatedBackground } from '../components/animated-background'
+import { subscribeToPushNotifications } from '@/utils/pushNotifications'
+import { GuessTheNumber } from '@/components/guess-the-number'
+import { TicTacToe } from '@/components/tic-tac-toe'
+import { initializeOneSignal, getOneSignalPlayerId } from '@/utils/onesignal'
 
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const ThemeToggle = () => {
+  const { theme, setTheme } = useTheme()
 
-// Ensure uploads directory exists
-const uploadsDir = process.env.RENDER_INTERNAL_FOLDER_PATH 
-  ? path.join(process.env.RENDER_INTERNAL_FOLDER_PATH, 'uploads')
-  : path.join(__dirname, 'uploads');
-
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+    >
+      <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+      <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+      <span className="sr-only">Toggle theme</span>
+    </Button>
+  )
 }
 
-const users = new Map();
-const rooms = new Map();
-const messages = new Map();
-const privateMessages = new Map();
-const userProfiles = new Map();
-const posts = new Map();
-const pushSubscriptions = new Map();
+const ChatPage: React.FC = () => {
+  const [backgroundTheme, setBackgroundTheme] = useState<'nature' | 'ocean' | 'sunset'>('ocean');
+  const [inputMessage, setInputMessage] = useState('');
+  const [messages, setMessages] = useState<Array<{ id: string; text: string; sender: string }>>([]);
+  
+  // Sample online users data
+  const onlineUsers = [
+    { id: '1', name: 'Alice', avatar: '/avatars/alice.jpg' },
+    { id: '2', name: 'Bob', avatar: '/avatars/bob.jpg' },
+    { id: '3', name: 'Charlie', avatar: '/avatars/charlie.jpg' },
+  ];
 
-const FIXED_GROUP = 'main-group';
-
-// Generate VAPID keys
-const vapidKeys = webpush.generateVAPIDKeys();
-
-webpush.setVapidDetails(
-  'mailto:your-email@example.com',
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
-);
-
-// Simple hash function using SHA-256
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
-
-// Set up multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-const upload = multer({ storage: storage });
-
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (req.file) {
-    res.json({ filename: req.file.filename });
-  } else {
-    res.status(400).send('No file uploaded.');
-  }
-});
-
-app.get('/', (req, res) => {
-  res.send('Chat App Backend is running!');
-});
-
-app.get('/api/vapidPublicKey', (req, res) => {
-  res.json({ publicKey: vapidKeys.publicKey });
-});
-
-app.post('/api/subscribe', (req, res) => {
-  const { subscription, username } = req.body;
-  pushSubscriptions.set(username, subscription);
-  res.status(201).json({});
-});
-
-app.get('/api/posts', (req, res) => {
-  const allPosts = Array.from(posts.values());
-  res.json(allPosts);
-});
-
-app.post('/api/posts', upload.single('media'), (req, res) => {
-  const { content, username } = req.body;
-  const mediaFile = req.file;
-
-  if (!content && !mediaFile) {
-    return res.status(400).json({ error: 'Post must contain either content or media' });
-  }
-
-  const newPost = {
-    id: uuidv4(),
-    username,
-    content,
-    mediaUrl: mediaFile ? `/uploads/${mediaFile.filename}` : null,
-    mediaType: mediaFile ? (mediaFile.mimetype.startsWith('image/') ? 'image' : 'video') : null,
-    likes: 0,
-    comments: 0,
-    timestamp: Date.now()
-  };
-
-  posts.set(newPost.id, newPost);
-  res.status(201).json(newPost);
-});
-
-app.post('/api/posts/:postId/like', (req, res) => {
-  const { postId } = req.params;
-  const post = posts.get(postId);
-
-  if (!post) {
-    return res.status(404).json({ error: 'Post not found' });
-  }
-
-  post.likes += 1;
-  res.json({ likes: post.likes });
-});
-
-app.post('/api/posts/:postId/comment', (req, res) => {
-  const { postId } = req.params;
-  const { comment, username } = req.body;
-  const post = posts.get(postId);
-
-  if (!post) {
-    return res.status(404).json({ error: 'Post not found' });
-  }
-
-  if (!post.comments) {
-    post.comments = [];
-  }
-
-  const newComment = {
-    id: uuidv4(),
-    username,
-    content: comment,
-    timestamp: Date.now()
-  };
-
-  post.comments.push(newComment);
-  res.status(201).json(newComment);
-});
-
-function deleteExpiredMessages(room) {
-  const roomMessages = messages.get(room) || [];
-  const now = Date.now();
-  const updatedMessages = roomMessages.filter(msg => {
-    if (msg.duration && msg.seenBy.length > 1 && now - msg.firstSeenTimestamp > msg.duration * 1000) {
-      io.to(room).emit('message_deleted', { messageId: msg.id });
-      return false;
-    }
-    return true;
-  });
-  messages.set(room, updatedMessages);
-}
-
-setInterval(() => {
-  for (const room of rooms.keys()) {
-    deleteExpiredMessages(room);
-  }
-}, 1000);
-
-async function sendPushNotification(username, payload) {
-  const subscription = pushSubscriptions.get(username);
-  if (subscription) {
-    try {
-      await webpush.sendNotification(subscription, JSON.stringify(payload));
-    } catch (error) {
-      console.error('Error sending push notification:', error);
-    }
-  }
-}
-
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
-
-  socket.on('register', ({ username, password }) => {
-    if (userProfiles.has(username)) {
-      socket.emit('register_error', 'Username already exists');
-    } else {
-      try {
-        const hashedPassword = hashPassword(password);
-        userProfiles.set(username, {
-          password: hashedPassword,
-          followers: [],
-          following: [],
-          verified: false,
-          streakCount: 0,
-          stars: 0
-        });
-        socket.emit('register_success');
-      } catch (error) {
-        console.error('Error hashing password:', error);
-        socket.emit('register_error', 'Registration failed');
-      }
-    }
-  });
-
-  socket.on('join_room', ({ username, room, password }) => {
-    console.log('Join room attempt:', { username, room });
-
-    const userProfile = userProfiles.get(username);
-    if (!userProfile) {
-      socket.emit('join_error', 'User not found');
-      return;
-    }
-
-    try {
-      const hashedPassword = hashPassword(password);
-      if (hashedPassword !== userProfile.password) {
-        console.log('Invalid password attempt');
-        socket.emit('join_error', 'Invalid password');
-        return;
-      }
-
-      socket.join(room);
-      users.set(socket.id, { id: socket.id, username, room, isOnline: true, isActive: true });
-
-      if (!rooms.has(room)) {
-        rooms.set(room, new Set());
-      }
-      rooms.get(room).add(socket.id);
-
-      if (!messages.has(room)) {
-        messages.set(room, []);
-      }
-
-      // Send existing messages to the user
-      const roomMessages = messages.get(room) || [];
-      socket.emit('message_history', roomMessages);
-
-      const roomUsers = Array.from(rooms.get(room)).map(id => {
-        const user = users.get(id);
-        return {
-          ...user,
-          followers: userProfiles.get(user.username).followers.length,
-          verified: userProfiles.get(user.username).verified
-        };
-      }).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
-      
-      console.log('User joined successfully:', { username, room });
-      socket.emit('join_success', { username });
-
-      // Emit user online event
-      io.to(room).emit('user_online', username);
-
-      // After successful join, send notification to all other users
-      socket.to(room).emit('user_joined', { username });
-
-      // Send push notification to all subscribed users
-      roomUsers.forEach(user => {
-        if (user.username !== username) {
-          sendPushNotification(user.username, {
-            title: 'New User Joined',
-            body: `${username} has joined the chat.`
-          });
-        }
-      });
-
-      // Increment streak count
-      userProfile.streakCount++;
-      if (userProfile.streakCount % 7 === 0) {
-        userProfile.stars++;
-        socket.emit('star_earned');
-      }
-    } catch (error) {
-      console.error('Error during join room:', error);
-      socket.emit('join_error', 'An error occurred while joining the room');
-    }
-  });
-
-  socket.on('send_message', (data) => {
-    const { room, id, message, username, timestamp, duration, replyTo } = data;
-    console.log('Received message:', data);
-
-    const newMessage = { 
-      id, 
-      message, 
-      username, 
-      timestamp, 
-      duration, 
-      replyTo, 
-      seenBy: [username], 
-      reactions: {},
-      firstSeenTimestamp: null  
-    };
-
-    if (message.startsWith('Game Result:')) {
-      newMessage.type = 'system';
-      newMessage.username = 'Game Bot';
-    }
-
-    const roomMessages = messages.get(room) || [];
-    roomMessages.push(newMessage);
-    messages.set(room, roomMessages);
-
-    console.log('Broadcasting message to room:', room);
-    io.to(room).emit('receive_message', newMessage);
-
-    // Send push notification for new message to all users in the room except the sender
-    const roomUsers = Array.from(rooms.get(room) || []);
-    roomUsers.forEach(userId => {
-      const user = users.get(userId);
-      if (user && user.username !== username) {
-        sendPushNotification(user.username, {
-          title: `New message from ${username}`,
-          body: message.substring(0, 50) + (message.length > 50 ? '...' : '')
-        });
-      }
-    });
-  });
-
-  socket.on('send_private_message', ({ senderId, receiverId, message, duration, replyTo }) => {
-    const sender = Array.from(users.values()).find(user => user.id === senderId);
-    const receiver = Array.from(users.values()).find(user => user.id === receiverId);
-
-    if (sender && receiver) {
-      const privateMessage = {
+  const sendMessage = () => {
+    if (inputMessage.trim()) {
+      const newMessage = {
         id: Date.now().toString(),
-        senderId,
-        receiverId,
-        senderUsername: sender.username,
-        message,
-        timestamp: Date.now(),
-        duration,
-        replyTo
+        text: inputMessage,
+        sender: 'user',
       };
-
-      if (!privateMessages.has(senderId)) {
-        privateMessages.set(senderId, []);
-      }
-      if (!privateMessages.has(receiverId)) {
-        privateMessages.set(receiverId, []);
-      }
-
-      privateMessages.get(senderId).push(privateMessage);
-      privateMessages.get(receiverId).push(privateMessage);
-
-      io.to(receiverId).emit('receive_private_message', privateMessage);
-      socket.emit('private_message_sent', privateMessage);
-
-      // Send push notification for private message
-      sendPushNotification(receiver.username, {
-        title: `New private message from ${sender.username}`,
-        body: message.substring(0, 50) + (message.length > 50 ? '...' : '')
-      });
+      setMessages([...messages, newMessage]);
+      setInputMessage('');
     }
-  });
+  };
 
-  socket.on('follow_user', ({ followerUsername, followedUsername }) => {
-    const followerProfile = userProfiles.get(followerUsername);
-    const followedProfile = userProfiles.get(followedUsername);
+  return (
+    <div className="fixed inset-0 bg-white/90 dark:bg-gray-900/90 overflow-hidden flex flex-col">
+      <AnimatedBackground theme={backgroundTheme} />
+      <div className="relative z-10 flex flex-col h-full">
+        {/* Header */}
+        <header className="p-4 flex justify-between items-center bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
+          <h1 className="text-2xl font-bold">Chat App</h1>
+          <div className="flex items-center space-x-2">
+            <Select
+              value={backgroundTheme}
+              onValueChange={(value: 'nature' | 'ocean' | 'sunset') => setBackgroundTheme(value)}
+            >
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Background Theme" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="nature">Nature</SelectItem>
+                <SelectItem value="ocean">Ocean</SelectItem>
+                <SelectItem value="sunset">Sunset</SelectItem>
+              </SelectContent>
+            </Select>
+            <ThemeToggle />
+          </div>
+        </header>
 
-    if (followerProfile && followedProfile) {
-      if (!followedProfile.followers.includes(followerUsername)) {
-        followedProfile.followers.push(followerUsername);
-        followerProfile.following.push(followedUsername);
-        socket.emit('follow_success', { followedUsername });
-        io.to(followedUsername).emit('new_follower', { followerUsername });
+        {/* Main content */}
+        <main className="flex-grow overflow-hidden flex">
+          {/* Sidebar */}
+          <aside className="w-64 bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm p-4 overflow-y-auto">
+            <OnlineUsers users={onlineUsers} />
+          </aside>
 
-        // Send push notification for new follower
-        sendPushNotification(followedUsername, {
-          title: 'New Follower',
-          body: `${followerUsername} is now following you!`
-        });
-      }
-    }
-  });
+          {/* Chat area */}
+          <div className="flex-grow flex flex-col">
+            <ScrollArea className="flex-grow p-4">
+              {messages.map((message) => (
+                <div key={message.id} className={`mb-4 ${message.sender === 'user' ? 'text-right' : 'text-left'}`}>
+                  <div className={`inline-block p-2 rounded-lg ${message.sender === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                    {message.text}
+                  </div>
+                </div>
+              ))}
+            </ScrollArea>
+            <div className="p-4 bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
+              <div className="flex items-center space-x-2">
+                <Input
+                  type="text"
+                  placeholder="Type a message..."
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      sendMessage();
+                    }
+                  }}
+                  className="flex-grow"
+                />
+                <Button onClick={sendMessage}>
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  )
+}
 
-  socket.on('edit_message', ({ messageId, newText, room }) => {
-    console.log('Edit message request:', { messageId, newText, room });
-    const roomMessages = messages.get(room) || [];
-    const messageIndex = roomMessages.findIndex(msg => msg.id === messageId);
-    if (messageIndex !== -1) {
-      roomMessages[messageIndex].message = newText;
-      roomMessages[messageIndex].isEdited = true;
-      console.log('Message edited, broadcasting to room:', room);
-      io.to(room).emit('message_edited', { messageId, newText });
-    }
-  });
-
-  socket.on('message_seen', ({ messageId, username, room }) => {
-    console.log('Message seen:', { messageId, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message && !message.seenBy.includes(username)) {
-      message.seenBy.push(username);
-      if (message.seenBy.length === 2) {
-        message.firstSeenTimestamp = Date.now();
-      }
-      console.log('Updating seen status for message:', messageId);
-      io.to(room).emit('update_seen', { messageId, seenBy: message.seenBy });
-    }
-  });
-
-  socket.on('delete_message', ({ messageId, room }) => {
-    console.log('Delete message request:', { messageId, room });
-    const roomMessages = messages.get(room) || [];
-    const updatedMessages = roomMessages.filter(msg => msg.id !== messageId);
-    messages.set(room, updatedMessages);
-    console.log('Message deleted, broadcasting to room:', room);
-    io.to(room).emit('message_deleted', { messageId });
-  });
-
-  socket.on('update_user_status', ({ isActive, room }) => {
-    console.log('User status update:', socket.id, isActive);
-    const user = users.get(socket.id);
-    if (user) {
-      user.isActive = isActive;
-      const roomUsers = Array.from(rooms.get(room)).map(id => users.get(id)).filter(Boolean);
-      io.to(room).emit('user_list', roomUsers);
-      io.to(room).emit('user_status_update', { userId: socket.id, isActive });
-    }
-  });
-
-  socket.on('typing_start', ({ username, room }) => {
-    console.log('User started typing:', username);
-    socket.tosocket.to(room).emit('typing_start', { username });
-  });
-
-  socket.on('typing_end', ({ username, room }) => {
-    console.log('User stopped typing:', username);
-    socket.to(room).emit('typing_end', { username });
-  });
-
-  socket.on('add_reaction', ({ messageId, emoji, username, room }) => {
-    console.log('Add reaction:', { messageId, emoji, username, room });
-    const roomMessages = messages.get(room) || [];
-    const message = roomMessages.find(msg => msg.id === messageId);
-    if (message) {
-      if (!message.reactions[emoji]) {
-        message.reactions[emoji] = [];
-      }
-      if (!message.reactions[emoji].includes(username)) {
-        message.reactions[emoji].push(username);
-        io.to(room).emit('message_reaction', { messageId, emoji, username });
-      }
-    }
-  });
-
-  socket.on('new_post', (postData) => {
-    const newPost = {
-      id: uuidv4(),
-      ...postData,
-      likes: 0,
-      comments: 0,
-      timestamp: Date.now()
-    };
-
-    posts.set(newPost.id, newPost);
-    io.emit('new_post', newPost);
-  });
-
-  socket.on('game_result', ({ username, result, gameType }) => {
-    const room = users.get(socket.id)?.room;
-    if (room) {
-      io.to(room).emit('receive_message', {
-        id: Date.now().toString(),
-        message: `🎮 ${gameType}: ${username} ${result}`,
-        username: 'Game Bot',
-        timestamp: Date.now(),
-        type: 'system'
-      });
-    }
-  });
-
-  socket.on('tic_tac_toe_move', ({ gameId, player, position }) => {
-    const room = users.get(socket.id)?.room;
-    if (room) {
-      io.to(room).emit('tic_tac_toe_update', { gameId, player, position });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const user = users.get(socket.id);
-    if (user) {
-      const { username, room } = user;
-      users.delete(socket.id);
-      
-      if (rooms.has(room)) {
-        rooms.get(room).delete(socket.id);
-        if (rooms.get(room).size === 0) {
-          rooms.delete(room);
-        } else {
-          // Emit user offline event
-          io.to(room).emit('user_offline', username);
-          
-          const roomUsers = Array.from(rooms.get(room))
-            .map(id => {
-              const user = users.get(id);
-              return {
-                ...user,
-                followers: userProfiles.get(user.username).followers.length,
-                verified: userProfiles.get(user.username).verified
-              };
-            })
-            .filter(Boolean);
-          io.to(room).emit('user_list', roomUsers);
-        }
-      }
-    }
-    console.log('A user disconnected:', socket.id);
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+export default ChatPage
 
